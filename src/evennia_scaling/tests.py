@@ -9,8 +9,9 @@ Discovered by Django's test runner via runtests.py at the repository root.
 """
 
 import unittest
+from datetime import timedelta
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 import evennia_scaling
 from evennia_scaling.tickets import create_ticket
@@ -93,3 +94,97 @@ class TestTickets(TestCase):
         """
         with self.assertNumQueries(0):
             create_ticket(self.ACCOUNT, self.CHARACTER, "shard0")
+
+    def test_tk_05_the_table_is_in_the_game_database(self):
+        """TK-05: pins the placement, so it is not moved to an alias.
+
+        A library's tables go on an alias of its own when its data has to
+        outlive the game database or be read by more than one instance. A
+        ticket is neither — one instance writes and reads it seconds apart,
+        and after a wipe there is no in-flight handoff whose ticket matters.
+
+        Asserted through the router chain rather than by reading settings, so
+        it fails if a router is added that sends these rows elsewhere.
+        """
+        from evennia_scaling.models import Ticket
+
+        self.assertEqual(Ticket.objects.all().db, "default")
+
+    def _ticket(self, to_instance="shard0"):
+        return create_ticket(self.ACCOUNT, self.CHARACTER, to_instance)
+
+    def test_tk_06_stores_every_field_of_the_ticket(self):
+        """TK-06: what the sender minted is what the receiver holds.
+
+        A field dropped here is one the receiver cannot check on redemption
+        or hand back to whatever rebuilds the character.
+        """
+        from evennia_scaling.models import Ticket
+        from evennia_scaling.tickets import store_ticket
+
+        ticket = self._ticket()
+        store_ticket(ticket)
+
+        row = Ticket.objects.get(token=ticket["token"])
+        self.assertEqual(row.account_archive_id, ticket["account_archive_id"])
+        self.assertEqual(
+            row.character_archive_id, ticket["character_archive_id"]
+        )
+        self.assertEqual(row.to_instance, ticket["to_instance"])
+
+    @override_settings(SCALING_TICKET_LIFETIME_SECONDS=30)
+    def test_tk_07_stamps_an_expiry_from_the_local_clock(self):
+        """TK-07: the payload carries no expiry — this instance decides.
+
+        An absolute time travelling in the payload would assume two
+        instances agree on the hour, and skew would expire tickets early or
+        late in a way nobody would think to look for.
+        """
+        from django.utils import timezone
+
+        from evennia_scaling.tickets import store_ticket
+
+        before = timezone.now()
+        row = store_ticket(self._ticket())
+        after = timezone.now()
+
+        self.assertGreaterEqual(row.expires_at, before + timedelta(seconds=30))
+        self.assertLessEqual(row.expires_at, after + timedelta(seconds=30))
+
+    def test_tk_08_storing_sweeps_expired_tickets(self):
+        """TK-08: cleanup rides on traffic rather than a scheduler.
+
+        A busy instance sweeps constantly; a quiet one accumulates nothing,
+        because nothing is arriving.
+        """
+        from django.utils import timezone
+
+        from evennia_scaling.models import Ticket
+        from evennia_scaling.tickets import store_ticket
+
+        stale = self._ticket()
+        store_ticket(stale)
+        Ticket.objects.filter(token=stale["token"]).update(
+            expires_at=timezone.now() - timedelta(seconds=1)
+        )
+
+        store_ticket(self._ticket())
+        self.assertFalse(Ticket.objects.filter(token=stale["token"]).exists())
+
+    def test_tk_09_the_sweep_spares_live_tickets(self):
+        """TK-09: including the one just written.
+
+        Sweeping after the write rather than before is what makes that
+        certain — the new row is the one thing that must survive, and this
+        order means a sweep can never race it.
+        """
+        from evennia_scaling.models import Ticket
+        from evennia_scaling.tickets import store_ticket
+
+        first = self._ticket()
+        store_ticket(first)
+        second = self._ticket()
+        store_ticket(second)
+
+        held = set(Ticket.objects.values_list("token", flat=True))
+        self.assertEqual(held, {first["token"], second["token"]})

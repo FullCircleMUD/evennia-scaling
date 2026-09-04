@@ -69,9 +69,50 @@ the token never touches the client: it travels from one Server to the Portal and
 over their AMP links. There is nothing to intercept. The address the Portal reports is also the same
 for every instance, so the check would either always pass or refuse on something incidental.
 
+**The table lives in the consumer's game database.** A library's tables go on an alias of its own when
+its data has to outlive the game database or be read by more than one instance. A ticket is neither: it
+is written and read by one instance seconds apart, and after a wipe there is no in-flight handoff whose
+ticket still matters. An alias would cost a database, a router and a migration step a consumer has to
+configure, to protect rows that are garbage almost immediately. TK-05 pins that, so it is not later
+"fixed" into an alias by someone applying the alias rule without reading the reason.
+
+It has to be in *a* database rather than in memory: the two ends of a handoff run in different
+processes, and a database is what crosses that boundary.
+
 | ID | Case | Test function |
 |---|---|---|
 | TK-01 | `create_ticket` returns a mapping carrying the token, both archive ids and the destination instance | test_tk_01_returns_the_ticket_as_data |
 | TK-02 | Each call mints a different token | test_tk_02_each_call_mints_a_different_token |
 | TK-03 | The token is a canonical lowercase hex string, so comparison is plain string equality | test_tk_03_token_is_canonical_lowercase_hex |
 | TK-04 | The sending instance stores nothing — `create_ticket` writes no row to any database | test_tk_04_writes_no_row_on_the_sending_instance |
+| TK-05 | The ticket table is in the game database, not on an alias of the library's own | test_tk_05_the_table_is_in_the_game_database |
+
+#### Storing, on the receiving instance
+
+`store_ticket` writes the row when the handoff message is handled. The ticket crosses in the shared bus
+database and lives here in the local one — the bus is transport, not storage, and it deletes the
+message as soon as the handler says it is done.
+
+**The receiver stamps the expiry, from its own clock.** An absolute time travelling in the payload
+would assume two instances agree on the hour, and skew would expire tickets early or late in a way
+nobody would think to look for. The receiving instance applying its own lifetime removes the
+assumption, and it is the instance bearing the cost of holding the row.
+
+**Ten seconds is long enough.** The session is moved over a live AMP link and arrives immediately, so a
+ticket is normally redeemed in the same breath as it is written. What the lifetime covers is the case
+where nobody arrives — a player who drops mid-move — and the only cost of that is a row nobody sweeps
+until the next one is stored.
+
+**The sweep rides on traffic rather than a scheduler.** Cleanup happens after a write, so it is
+proportional to what the instance is doing: a busy one sweeps constantly, a quiet one accumulates
+nothing because nothing is arriving. The library owns no timer.
+
+It sweeps *after* the write, not before. The new row is the one thing that must survive, and that order
+means a sweep can never race it.
+
+| ID | Case | Test function |
+|---|---|---|
+| TK-06 | `store_ticket` writes a row carrying every field of the ticket | test_tk_06_stores_every_field_of_the_ticket |
+| TK-07 | The expiry is stamped from this instance's clock, not carried in the payload | test_tk_07_stamps_an_expiry_from_the_local_clock |
+| TK-08 | Storing sweeps expired rows, so cleanup needs no scheduler | test_tk_08_storing_sweeps_expired_tickets |
+| TK-09 | The sweep spares tickets that are still live, including the one just written | test_tk_09_the_sweep_spares_live_tickets |

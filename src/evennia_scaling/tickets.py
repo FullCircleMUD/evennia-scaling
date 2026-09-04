@@ -12,10 +12,15 @@ it left. So the destination has a session and no idea who it is. Without a
 ticket the player types their password again on every hop, which is the thing
 this library exists to avoid.
 
-Only `create_ticket` exists so far. See docs/test-plan.md § TK.
+`create_ticket` runs on the sending instance; `store_ticket` on the receiving
+one. They are in different processes on different machines, so nothing is
+shared between them but the ticket itself.
+
+See docs/test-plan.md § TK.
 """
 
 import uuid
+from datetime import timedelta
 
 
 def create_ticket(account_archive_id, character_archive_id, to_instance):
@@ -49,3 +54,49 @@ def create_ticket(account_archive_id, character_archive_id, to_instance):
         "character_archive_id": character_archive_id,
         "to_instance": to_instance,
     }
+
+
+def purge_expired() -> int:
+    """Delete every ticket past its expiry. Returns how many went.
+
+    Called after a write rather than on a timer, so cleanup is proportional
+    to traffic and the library owns no scheduler. A busy instance sweeps
+    constantly; a quiet one accumulates nothing, because nothing is arriving.
+    """
+    from django.utils import timezone
+
+    from .models import Ticket
+
+    removed, _ = Ticket.objects.filter(expires_at__lte=timezone.now()).delete()
+    return removed
+
+
+def store_ticket(ticket):
+    """Write a ticket this instance has been told to expect.
+
+    Called when the handoff message is handled. The ticket crosses in the
+    shared bus database and lives here in the local one — the bus is
+    transport, not storage, and it deletes the message as soon as the handler
+    says it is done.
+
+    The expiry is stamped here, from this instance's clock. An absolute time
+    carried in the payload would assume two instances agree on the hour, and
+    skew would expire tickets early or late in a way nobody would think to
+    look for.
+    """
+    from django.utils import timezone
+
+    from .config import get_ticket_lifetime
+    from .models import Ticket
+
+    row = Ticket.objects.create(
+        token=ticket["token"],
+        account_archive_id=ticket["account_archive_id"],
+        character_archive_id=ticket["character_archive_id"],
+        to_instance=ticket["to_instance"],
+        expires_at=timezone.now() + timedelta(seconds=get_ticket_lifetime()),
+    )
+    # After the write, not before: the new row is the one thing that must
+    # survive, and doing it in this order means a sweep can never race it.
+    purge_expired()
+    return row
