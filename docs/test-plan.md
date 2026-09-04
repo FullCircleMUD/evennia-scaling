@@ -15,6 +15,7 @@ Behaviour is agreed here first, before any test or code — see
 
 | Prefix | Covers |
 |---|---|
+| `CF` | Settings, each behind an accessor |
 | `SC` | The scaffold — the library is installed and the runner reaches it |
 | `TK` | Tickets — what lets an arriving session be recognised |
 
@@ -40,6 +41,18 @@ module — each of which otherwise looks like "no tests ran".
 |---|---|---|
 | SC-01 | The package is importable and carries its version | test_sc_01_the_package_is_importable_and_versioned |
 | SC-02 | A log call outside an Evennia engine is a silent no-op rather than an error | test_sc_02_the_log_shim_is_a_no_op_outside_evennia |
+
+### CF — settings
+
+Settings are read through an accessor in `config.py` and nowhere else, so a default lives in one place
+and a consumer overriding one changes every reader at once.
+
+**The defaults are commitments.** A consumer who sets nothing gets them, so a case pins each one — the
+value can change, but not by accident and not without the plan saying so.
+
+| ID | Case | Test function |
+|---|---|---|
+| CF-01 | The ticket lifetime defaults to ten seconds when the setting is absent | test_cf_01_the_ticket_lifetime_defaults_to_ten_seconds |
 
 ### TK — tickets
 

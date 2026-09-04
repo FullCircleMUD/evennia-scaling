@@ -18,7 +18,8 @@ session over.
 
 ## Status
 
-**Early.** What exists is the scaffold and ticket minting. Not usable yet. See
+**Early.** What exists is the scaffold and the ticket half — minting one, storing it on the instance a
+session is arriving at, and sweeping the stale ones. Not usable yet. See
 [docs/progress.md](docs/progress.md).
 
 ## Is this for me?

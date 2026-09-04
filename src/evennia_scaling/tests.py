@@ -188,3 +188,18 @@ class TestTickets(TestCase):
 
         held = set(Ticket.objects.values_list("token", flat=True))
         self.assertEqual(held, {first["token"], second["token"]})
+
+
+class TestConfig(TestCase):
+    """CF — settings."""
+
+    def test_cf_01_the_ticket_lifetime_defaults_to_ten_seconds(self):
+        """CF-01: a consumer who sets nothing gets this.
+
+        Exercised only through `store_ticket` otherwise, and always with the
+        setting overridden — so the default could change and nothing would
+        notice.
+        """
+        from evennia_scaling.config import get_ticket_lifetime
+
+        self.assertEqual(get_ticket_lifetime(), 10)

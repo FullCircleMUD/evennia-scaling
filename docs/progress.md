@@ -2,9 +2,24 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-04 — receiving a ticket
+
+12 tests, both linters clean. Nothing is usable yet.
+
+- **The ticket table** — in the game database, not on an alias of the library's own. A library's
+  tables go on their own alias when the data must outlive the game database or be read by more than
+  one instance, and a ticket is neither. TK-05 pins that so a later session does not move it.
+- **`store_ticket`** — writes the row when a handoff message is handled, stamping the expiry from this
+  instance's clock. An absolute time carried in the payload would assume two instances agree on the
+  hour.
+- **`purge_expired`** — sweeps after the write rather than before, so it cannot race the row just
+  written, and on traffic rather than a timer, so the library owns no scheduler.
+- **`config.py`** — the ticket lifetime, ten seconds. The session arrives immediately over AMP, so
+  what the lifetime covers is a player who drops mid-move.
+
 ## 2026-09-04 — scaffold and ticket minting
 
-Six tests, both linters clean. Nothing is usable yet.
+Six tests. Nothing usable.
 
 - **The scaffold** — `pyproject.toml`, the `src/` layout, `tests/` infrastructure on Evennia's settings
   defaults, the `log.py` shim writing to `scaling.log`, and two cases proving the install and the

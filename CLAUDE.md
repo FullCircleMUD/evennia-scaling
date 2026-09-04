@@ -38,7 +38,7 @@ For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Early.** The scaffold and ticket minting exist; nothing is usable yet. See
+**Early.** Minting, storing and sweeping tickets exist; nothing is usable yet. See
 [docs/progress.md](docs/progress.md).
 
 `libraries/evennia-scaling-OLD/` is a reference to read, **never a source to copy from**. It answers
@@ -146,7 +146,10 @@ evennia-scaling/
 ├── src/
 │   └── evennia_scaling/       # library code (src layout)
 │       ├── __init__.py
-│       ├── tickets.py         # what lets an arriving session be recognised
+│       ├── config.py          # settings, each behind an accessor
+│       ├── models.py          # the ticket row, in the game database
+│       ├── migrations/
+│       ├── tickets.py         # minting, storing and sweeping tickets
 │       ├── log.py             # shim onto Evennia's logger → scaling.log
 │       └── tests.py           # unit tests, run via runtests.py
 ├── tests/                     # standalone test infrastructure
