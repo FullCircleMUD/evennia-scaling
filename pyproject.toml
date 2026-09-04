@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evennia-scaling"
+version = "0.0.1"
+description = "Move a character between independent Evennia instances, each on its own database."
+readme = "README.md"
+license = {text = "BSD-3-Clause"}
+authors = [{name = "Tim Baird"}]
+requires-python = ">=3.10"
+dependencies = [
+    "evennia",
+    # None of these are on PyPI. Declared so the dependency is stated where a
+    # reader looks for it, and installed editable from the local checkouts —
+    # see CLAUDE.md.
+    "evennia-portal-multiplex",
+    "evennia-archive",
+    "evennia-message-bus",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["evennia_scaling*"]
