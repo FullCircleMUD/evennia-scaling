@@ -20,6 +20,25 @@ class EvenniaScalingConfig(AppConfig):
 
         config.check_settings()
         self._install_session_class()
+        self._install_ooc_command()
+
+    def _install_ooc_command(self):
+        """Put our `ooc` where Evennia's default cmdset will pick it up.
+
+        Not the class-setting treatment `SERVER_SESSION_CLASS` gets, even
+        though `CMDSET_ACCOUNT` is a setting: it names a gamedir module that
+        imports `evennia.default_cmds`, which is not populated while
+        `ready()` is running, so resolving it here raises.
+
+        The module attribute is replaced instead, which is what
+        `AccountCmdSet.at_cmdset_creation` reads when a session is built —
+        long after startup.
+        """
+        from evennia.commands.default import account as account_commands
+
+        from . import commands
+
+        account_commands.CmdOOC = commands.ScalingCmdOOC
 
     def _install_session_class(self):
         """Subclass whatever `SERVER_SESSION_CLASS` names, and repoint it.

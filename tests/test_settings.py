@@ -28,6 +28,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 # Library under test
 INSTALLED_APPS = list(INSTALLED_APPS) + [  # noqa: F405
     "evennia_archive",
+    "evennia_message_bus",
     "evennia_scaling",
 ]
 
@@ -50,9 +51,19 @@ DATABASES = {
         "NAME": ":memory:",
         "TEST": {"NAME": "file:evennia_scaling_test_archive?mode=memory&cache=shared"},
     },
+    # The bus. Shared storage too — a message written by one instance is
+    # read by another.
+    "messagebus": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": ":memory:",
+        "TEST": {"NAME": "file:evennia_scaling_test_bus?mode=memory&cache=shared"},
+    },
 }
 
-DATABASE_ROUTERS = ["evennia_archive.db_router.ArchiveRouter"]
+DATABASE_ROUTERS = [
+    "evennia_archive.db_router.ArchiveRouter",
+    "evennia_message_bus.db_router.MessageBusRouter",
+]
 
 # `list(...)` rather than `+=`: Evennia declares this as a tuple.
 #
@@ -71,6 +82,10 @@ SCALING_ROLE = "router"
 # same reason as the role: the suite is a configured instance, and a test that
 # cares about one of these overrides it.
 SCALING_ROUTER_ID = "router"
+
+# This instance's name, as the bus knows it. The bus refuses to boot without
+# one, so the suite declares it as any configured instance would.
+MESSAGEBUS_INSTANCE_ID = "router"
 
 # The typeclasses the library validates at boot. Stubs carrying the mixins,
 # as any configured game's would be — check_settings resolves these during

@@ -11,6 +11,7 @@ from evennia_archive.mixins import (
 )
 
 from .config import get_shards, get_start_location_shard
+from .log import scaling_log
 
 #: The Attribute key naming where a character is in the game world.
 #: `AttributeProperty` takes its key from the attribute name, so this and the
@@ -238,6 +239,121 @@ class ScalingAccountMixin(ArchivableAccountMixin):
         """
         cls.refresh_from_archive(username)
         return super().authenticate(username, password, ip=ip, **kwargs)
+
+    def unpuppet_object(self, session):
+        """Release the character as Evennia does, and archive what was played.
+
+        Archiving and nothing else. This is not only reached from `ooc` —
+        `at_disconnect` calls it on every dropped connection and
+        `unpuppet_all()` calls it at shutdown. Archiving is safe and useful
+        on all three; deleting the character is not. A five-second dropout
+        would cost a player their position, and closing the browser
+        mid-fight would become the way out of it.
+
+        The delete and the transfer hang off the command that knows the
+        player asked for it.
+
+        Unpuppeting itself destroys nothing: it removes the session from
+        the object, clears the account link, fires the hooks and drops the
+        `puppeted` tag. The character stands where it was, which is what
+        makes linkdead work.
+        """
+        from evennia.utils.utils import make_iter
+        from evennia_archive.api import archive
+
+        from .config import ROLE_ROUTER, get_role
+
+        # `session` is one session or a list of them. Evennia's own body
+        # opens with make_iter for the same reason: unpuppet_all() — called
+        # before every reset and shutdown — passes self.sessions.all().
+        # Reading .puppet off the parameter directly works for every
+        # runtime path and raises on every shutdown.
+        #
+        # Collected before super(), which clears session.puppet.
+        # Deduplicated because two sessions can puppet one character in
+        # multisession modes 2 and 3.
+        characters = []
+        for one in make_iter(session):
+            puppet = getattr(one, "puppet", None)
+            if puppet is not None and puppet not in characters:
+                characters.append(puppet)
+
+        super().unpuppet_object(session)
+
+        if not characters:
+            return
+
+        # Nothing about a superuser is archived: it does not travel, so an
+        # archived copy could only ever overwrite the one the instance
+        # depends on. Before the breach check below, and deliberately —
+        # superusers do puppet on the router, so reporting them would bury
+        # the real thing under routine noise.
+        if self.is_superuser:
+            return
+
+        if get_role() == ROLE_ROUTER:
+            named = ", ".join(
+                f"{character} ({character.archive_id})"
+                for character in characters
+            )
+            scaling_log(
+                f"INVARIANT BREACH: {named} was puppeted on the router by "
+                f"{self} ({self.archive_id}). puppet_object never puppets "
+                f"here, so something bypassed it — a bug, or a way in this "
+                f"library does not cover. Archiving anyway; nothing else "
+                f"has been done.",
+                level="ERROR",
+            )
+
+        # The account once, however many sessions arrived — this runs while
+        # the server is trying to exit.
+        archive(self)
+        for character in characters:
+            archive(character)
+
+    def puppet_object(self, session, obj):
+        """On a router, go to the character's shard instead of puppeting it.
+
+        `CmdIC` resolves the character and then calls this, so Evennia's
+        resolution stays Evennia's. `evennia-shards` overrides the command
+        instead and reimplements that resolution, which it has to: it needs
+        ``_last_puppet`` written before the redirect, since that is how its
+        destination learns which character to puppet. Our ticket carries the
+        character's ``archive_id``, so nothing needs writing first.
+
+        Returning without puppeting is a shape this method already uses —
+        Evennia does the same for no permission, for a character puppeted
+        elsewhere, and for too many puppets.
+
+        Of the checks Evennia runs first, most concern state a router never
+        has: an existing puppet on the session, a character already
+        puppeted, a simultaneous-puppet limit. Two are kept. A missing
+        object or session still raises, and the puppet lock still applies —
+        without it a builder could send someone else's character to a shard.
+
+        Nothing here handles the outcome of the move. `transfer_to_instance`
+        owns that, so this path, the out-of-character path and a consumer's
+        own shard-to-shard move all report the same way.
+        """
+        from .config import ROLE_ROUTER, get_role
+        from .handoff import transfer_to_instance
+
+        # A superuser stays where it is, so it puppets normally even on a
+        # router. Transferring one would archive and delete an account the
+        # instance needs.
+        if self.is_superuser or get_role() != ROLE_ROUTER:
+            return super().puppet_object(session, obj)
+
+        if not obj:
+            raise RuntimeError("Object not found")
+        if not session:
+            raise RuntimeError("Session not found")
+
+        if not obj.access(self, "puppet"):
+            self.msg(f"You don't have permission to puppet '{obj.key}'.")
+            return
+
+        transfer_to_instance(self, session, obj, obj.current_shard)
 
     @classmethod
     def restore_characters(cls, account):

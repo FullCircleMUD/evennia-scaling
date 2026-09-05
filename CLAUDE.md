@@ -38,8 +38,9 @@ For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Early.** The ticket lifecycle, the arrival path, both typeclass mixins and the boot checks exist.
-The transfer itself does not, so nothing moves anyone yet. See [docs/progress.md](docs/progress.md).
+**Early — half a transfer.** The sending side is complete: both triggers, the transfer itself, its
+outcome reporting and its recovery path. The receiving side is not — a ticket is recognised on arrival
+and nothing is rebuilt from it. See [docs/progress.md](docs/progress.md).
 
 `libraries/evennia-scaling-OLD/` is a reference to read, **never a source to copy from**. It answers
 this problem a different way; anything taken from it is discussed and agreed first.
@@ -149,6 +150,8 @@ evennia-scaling/
 │       ├── apps.py            # AppConfig — the boot checks and the overrides
 │       ├── config.py          # settings, each behind an accessor
 │       ├── mixins.py          # the typeclass mixins a consumer adds
+│       ├── handoff.py         # leaving an instance, and reporting the outcome
+│       ├── commands.py        # `ooc`, replaced so a shard sends you home
 │       ├── models.py          # the ticket row, in the game database
 │       ├── migrations/
 │       ├── tickets.py         # minting, storing, sweeping and redeeming

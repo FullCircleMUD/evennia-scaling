@@ -20,6 +20,9 @@ Behaviour is agreed here first, before any test or code — see
 | `SS` | The Server session override — where an arriving session is admitted |
 | `SC` | The scaffold — the library is installed and the runner reaches it |
 | `AC` | The account mixin |
+| `HO` | Handoff — sending a session and what it plays to another instance |
+| `IC` | Going in character |
+| `OC` | Going out of character |
 | `SH` | Where a character is in the game world |
 | `SV` | Startup validation of the consumer's typeclasses |
 | `TK` | Tickets — what lets an arriving session be recognised |
@@ -35,6 +38,8 @@ The fake objects the suite needs, named and purposed.
 | `tests/bad_mro_character_stub.py` | Both mixins with archive's first. Raises `TypeError` on import — SV-05 |
 | `tests/bad_mro_account_stub.py` | The account side of the same — SV-10 |
 | `tests/bad_import_stub.py` | Raises `TypeError` on import for an unrelated reason — SV-06 |
+| `_PlayingSession` | A Server session as the sending paths see it — an address and what it puppets |
+| `_FakeSession` | A Server session as the arrival path sees it — sync data, `logged_in`, `uid` |
 
 Tests that create Evennia objects flush the identity map in `setUp`. Evennia's models are
 `SharedMemoryModel`, so a query returns a cached instance keyed on (class, primary key), and that cache
@@ -359,6 +364,207 @@ instances, and checking it would stop every game that offers guests from booting
 | SV-09 | One exposing an `archive_id` attribute without the mixin is refused | test_sv_09_a_hand_rolled_account_archive_id_is_refused |
 | SV-10 | An MRO conflict naming our account mixin is translated into an ordering message | test_sv_10_an_account_mro_conflict_becomes_an_ordering_message |
 | SV-11 | `BASE_GUEST_TYPECLASS` is not checked | test_sv_11_the_guest_typeclass_is_not_checked |
+
+### HO — handoff
+
+`transfer_to_instance(account, session, character, to_instance)` moves a session and what it is playing
+to another instance. Symmetric: going in character sends them to the character's shard, going out of
+character sends them back to the router, and only the destination differs. A consumer moving a character
+between shards calls the same function, so the path a game uses is the path the library uses.
+
+Six steps: archive the account, archive the character, mint a ticket naming both, send it over the bus,
+delete the character locally, hand the session to `evennia-portal-multiplex`.
+
+**The account is archived here** rather than when the session closes, because the destination rebuilds
+on arrival while the departing instance is still tearing its session down.
+
+**The character is deleted after the ticket is sent.** A failure at the handoff then leaves the
+character out of this database but present in the archive, with a live ticket already waiting — so a
+client reaching the destination still gets in.
+
+**The account is not deleted here.** That waits for the session to actually close: deleting it out from
+under a live session is not something to do hopefully.
+
+**The delete is deferred by a reactor tick, and has to be.** `CmdIC` writes
+`account.db._last_puppet = character` and logs against the character *after* `puppet_object` returns.
+Deleting inline means Evennia then serialises a dead object and raises — found live in the old library,
+not reasoned about, and its own `except RuntimeError` handler reads the character's name, so raising out
+fails the same way. `delay(0, ...)` resolves to `reactor.callLater(0, ...)`, which cannot run until the
+current call stack unwinds; commands run in the reactor thread, so the delete is *structurally* after
+Evennia has finished with the character. A busy server delays it; nothing can reorder it.
+
+**The outcome is handled here, not by the caller.** `send_session` returns a Deferred of
+`(moved, outcome)`. Handling it here means the in-character and out-of-character paths — and a
+consumer's own shard-to-shard move — all report the same way, from one table:
+
+| Outcome | What happened | Logged | Player told |
+|---|---|---|---|
+| `MOVED` | it worked | no | no |
+| `NOT_ATTACHED` | the destination is not attached to the Portal — that instance is down | ERROR | yes |
+| `REJECTED` | the destination refused or failed to build; the session was put back | ERROR | yes |
+| `STRANDED` | released, the build failed, and the rollback failed too | ERROR | no |
+| `NO_SUCH_SESSION` | the Portal no longer holds that session, usually a player who dropped mid-move | WARNING | no |
+| `ALREADY_THERE` | asked to move a session to where it already is | WARNING | no |
+
+**Everything that is not `MOVED` is logged**, because every one of them means a player did not arrive
+somewhere and the reason is worth having a record of.
+
+**The player is told only when a message can reach them and means something.** A stranded session has no
+instance to deliver to, and a session the Portal has dropped has nobody behind it. Telling them is not
+a kindness that fails quietly — it is a message into nothing.
+
+`ALREADY_THERE` is not a failure and needs no game text; the library would be inventing wording for a
+situation only its caller can interpret. It is logged because on a router it should be unreachable —
+the router is never in `SCALING_SHARDS`, so a character's `current_shard` is never here.
+
+**An errback as well as a callback.** The outcomes above are answers; an errback is what arrives when the
+move itself broke — a dropped AMP connection, a bug in the move. Without one it disappears into the
+Deferred and surfaces at garbage-collection time, if at all. The player is told, because at that point
+nothing is known about whether they can be reached and silence is the worse guess.
+
+The Deferred is still returned, so a caller can chain onto it. Nothing has to.
+
+| ID | Case | Test function |
+|---|---|---|
+| HO-01 | The account and the character are both archived | test_ho_01_archives_the_account_and_the_character |
+| HO-02 | The ticket names both archive ids and the destination | test_ho_02_mints_a_ticket_naming_both_and_the_destination |
+| HO-03 | The ticket is sent to the destination over the bus | test_ho_03_sends_the_ticket_over_the_bus |
+| HO-04 | The character's deletion is deferred to the reactor, not done inline | test_ho_04_defers_the_character_delete |
+| HO-05 | The session is handed off to the destination, carrying the ticket | test_ho_05_hands_the_session_off_carrying_the_ticket |
+| HO-06 | The account is not deleted — that waits for the session to close | test_ho_06_does_not_delete_the_account |
+| HO-07 | The outcome of the move comes back to the caller | test_ho_07_returns_the_outcome_of_the_move |
+| HO-08 | A move that succeeds is not logged and says nothing to the player | test_ho_08_a_successful_move_is_quiet |
+| HO-09 | A destination that is not attached is logged, and the player is told | test_ho_09_an_unattached_destination_is_logged_and_reported |
+| HO-10 | A rejected move is logged, and the player is told | test_ho_10_a_rejected_move_is_logged_and_reported |
+| HO-11 | A stranded session is logged, and the player is not told | test_ho_11_a_stranded_session_is_logged_and_not_reported |
+| HO-12 | A session the Portal no longer holds is logged, and the player is not told | test_ho_12_a_missing_session_is_logged_and_not_reported |
+| HO-13 | Moving to where the session already is is logged, and the player is not told | test_ho_13_already_there_is_logged_and_not_reported |
+| HO-14 | An error the move did not turn into an outcome is logged, and the player is told | test_ho_14_an_error_is_logged_and_reported |
+
+### IC — going in character
+
+On a router, going in character means going somewhere else. `ScalingAccountMixin.puppet_object`
+intercepts it: on a router it transfers the session to the character's shard and never puppets; on a
+shard it defers to Evennia, which puppets normally.
+
+**`puppet_object` rather than `CmdIC`**, because the command resolves the character and then calls this
+— so Evennia's resolution stays Evennia's. `evennia-shards` overrides the command instead and
+reimplements that resolution, which it has to: it needs `_last_puppet` written before the redirect,
+since that is how its destination learns which character to puppet. Our ticket carries the character's
+`archive_id`, so nothing needs writing first and the lower seam is available.
+
+Returning without puppeting is a shape `puppet_object` already uses — Evennia does the same for no
+permission, for a character puppeted elsewhere, and for too many puppets.
+
+Of the checks Evennia runs before puppeting, most concern state a router never has: an existing puppet
+on the session, a character already puppeted, a simultaneous-puppet limit. Two are kept. A missing
+object or session still raises, and `obj.access(self, "puppet")` still applies — without it a builder
+could send someone else's character to a shard.
+
+**Superusers never move.** They belong to the instance they were made on: Evennia expects `#1` to be
+there, and archiving one, deleting it and rebuilding it elsewhere takes an operator's way in with it.
+They are an administration tool rather than a way to play, so every part of the transfer steps aside for
+them — here, at the refresh on login, and wherever else the machinery would pick them up.
+
+Nothing here handles the outcome of the move. `transfer_to_instance` owns that, so the in-character
+path, the out-of-character path and a consumer's own shard-to-shard move all report the same way.
+
+| ID | Case | Test function |
+|---|---|---|
+| IC-01 | On a shard, `puppet_object` defers to Evennia and puppets normally | test_ic_01_a_shard_puppets_normally |
+| IC-02 | On a router, the character is not puppeted | test_ic_02_a_router_does_not_puppet |
+| IC-03 | On a router, the session, character and the character's shard are handed to the transfer | test_ic_03_a_router_hands_the_session_to_the_transfer |
+| IC-04 | A character the account cannot puppet is refused, and nothing is transferred | test_ic_04_a_character_they_cannot_puppet_is_refused |
+| IC-05 | A missing object or session raises `RuntimeError`, as Evennia's does | test_ic_05_a_missing_object_or_session_raises |
+| IC-06 | A superuser puppets normally, even on a router | test_ic_06_a_superuser_puppets_normally |
+
+### OC — going out of character
+
+`ScalingAccountMixin.unpuppet_object` lets Evennia release the character normally, then archives what
+was released. **It archives and stops.**
+
+It is not only reached from `ooc`. `at_disconnect` calls it on every dropped connection and
+`unpuppet_all()` calls it at shutdown. Archiving is safe and useful on all three; deleting the character
+is not — a five-second dropout would cost a player their position, and closing the browser mid-fight
+would become the way out of it. So the delete and the transfer hang off the command that knows the
+player asked for it.
+
+The character reference is taken *before* `super()`, which clears `session.puppet`. Unpuppeting itself
+destroys nothing: it removes the session from the object, clears the account link, fires the hooks and
+drops the `puppeted` tag. The character stands where it was, which is what makes linkdead work.
+
+**`session` is one session or a list of them.** Evennia's own body opens with `make_iter` for the same
+reason: `unpuppet_all()` — called before every reset and shutdown — passes `self.sessions.all()`.
+Reading `.puppet` off the parameter works on every runtime path and raises on every shutdown, with
+nothing in any log, and it does so with nobody connected because an account with no sessions still
+passes an empty list.
+
+Archiving only what a live session is puppeting is also what makes this safe: a character left behind
+unpuppeted is not archived, so a shutdown cannot overwrite a newer copy held by another instance.
+
+**The breach log.** `puppet_object` never puppets on a router, so a character puppeted there means
+something got past the interception — a bug worth tracking down. It is logged rather than handled,
+because guessing at a recovery would hide it. It names the account and the character with their archive
+ids, so the line says who to ask and what to look at.
+
+A superuser is the exception, and not an accident: superusers *do* puppet on the router, so reporting
+them would bury the real thing under routine noise. The archive skip runs before the breach check, so
+the ordering of those two is load-bearing and `OC-05` and `OC-08` between them pin it.
+
+#### The command
+
+`ScalingCmdOOC` replaces Evennia's `CmdOOC`. Going out of character is a *deliberate* departure, and the
+command is the only place that knows it was deliberate — `unpuppet_object` is reached from
+`at_disconnect` and from `unpuppet_all()` as well.
+
+**The override is the shard's behaviour only.** On a router — and for a superuser anywhere — the command
+is Evennia's, unchanged: unpuppet and render the character-select menu, or say they are already out of
+character. That is exactly right for the instance whose job is the out-of-character game, and it means
+the one hardcoded string this command would otherwise carry is Evennia's to word.
+
+It matters in a state that should not exist. `puppet_object` never puppets on a router, so a character
+puppeted there is the breach `unpuppet_object` logs. If it happens anyway and they type `ooc`, falling
+through unpuppets them **and tells them so** — where handling it ourselves would change their state and
+show them nothing.
+
+**On a shard, `super().func()` is never called.** Evennia's ends by rendering the character-select menu,
+which is the one screen a shard must not show: a shard holds one character and no roster, so a menu
+there offers a choice that does not exist. Nothing else in it is worth inheriting —
+`account.get_puppet(session)` is the whole of what going out of character needs to resolve.
+
+A consumer gating this — refusing to let someone leave mid-fight, say — subclasses and checks before
+calling `super().func()`. A consumer with their own `rent` or `quit` calls `transfer_to_instance`
+directly; there is no separate primitive, because leaving is the same six steps as arriving with a
+different destination.
+
+`OC-14` recovers a state no path here can produce: out of character on a shard with nothing puppeted.
+They can neither go out of character nor in as a character they do not have. Sent home without a ticket
+— a character-less ticket would mean changes across minting and reconstitution to improve an error path
+— and they log in again.
+
+That move reports its outcome like any other, through the same table `transfer_to_instance` uses. It has
+no account or character to archive, so it is a bare session move; without the shared reporting it would
+be the one move in the library that fails silently.
+
+| ID | Case | Test function |
+|---|---|---|
+| OC-01 | The account and the character are archived | test_oc_01_archives_the_account_and_the_character |
+| OC-02 | Nothing is deleted and nothing is transferred | test_oc_02_deletes_nothing_and_transfers_nothing |
+| OC-03 | A session with nothing puppeted archives nothing | test_oc_03_a_session_with_no_puppet_archives_nothing |
+| OC-04 | On a router, a puppeted character is logged as an invariant breach | test_oc_04_a_router_logs_a_puppeted_character_as_a_breach |
+| OC-05 | A superuser is not archived on unpuppet | test_oc_05_a_superuser_is_not_archived |
+| OC-06 | A list of sessions is handled, and every puppeted character is archived | test_oc_06_a_list_of_sessions_archives_every_character |
+| OC-07 | The account is archived once, however many sessions arrive | test_oc_07_the_account_is_archived_once |
+| OC-08 | A superuser unpuppeting on the router is not logged as a breach | test_oc_08_a_superuser_on_the_router_is_not_a_breach |
+| OC-09 | On a shard, going out of character transfers the session to the router | test_oc_09_a_shard_transfers_the_session_to_the_router |
+| OC-10 | On a shard, Evennia's `func` is not called, so no character-select menu is rendered | test_oc_10_a_shard_does_not_call_evennias_func |
+| OC-11 | The character is read before the unpuppet, which releases it | test_oc_11_reads_the_character_before_the_unpuppet |
+| OC-12 | On a router, nothing is transferred | test_oc_12_a_router_transfers_nothing |
+| OC-13 | On a router, `ooc` is Evennia's ordinary behaviour | test_oc_13_a_router_is_evennias_ordinary_behaviour |
+| OC-14 | On a shard, a session with nothing puppeted is sent to the router without a ticket, and logged | test_oc_14_a_shard_sends_a_stranded_session_home |
+| OC-15 | `AppConfig.ready()` installs the command, so a consumer's own survives | test_oc_15_ready_installs_the_command |
+| OC-16 | A superuser goes out of character where it stands, and is not transferred | test_oc_16_a_superuser_goes_ooc_where_it_stands |
+| OC-17 | The stranded recovery reports its outcome, like any other move | test_oc_17_the_stranded_recovery_reports_its_outcome |
 
 ### MS — messages between instances
 

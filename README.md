@@ -18,10 +18,10 @@ session over.
 
 ## Status
 
-**Early.** What exists is the ticket half — minting one, storing it where a session is arriving, and
-redeeming it — and the typeclass mixins: an account that can be found in the archive, rebuilt from it
-and refreshed at login, and a character that knows which shard it is on. Nothing moves anyone yet: the
-transfer itself is not built. See [docs/progress.md](docs/progress.md).
+**Early — half a transfer.** Leaving works: going in character on the router archives the account and
+character, mints a ticket, announces it over the bus and hands the session to the destination. Arriving
+does not — the receiving instance recognises the ticket and then has nothing to rebuild from it yet. See
+[docs/progress.md](docs/progress.md).
 
 ## Is this for me?
 

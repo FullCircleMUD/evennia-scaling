@@ -59,6 +59,10 @@ the session leaves.
 whatever protocol they are on. This library asks for the move and is told the outcome; it never touches
 a socket, a protocol or a connection.
 
+`handoff.py` is the only module here that touches it, through two calls: `transfer_to_instance` for a
+move that carries a character, and `move_session` for one that carries nothing. Both report the outcome
+the same way.
+
 The ticket travels in multiplex's payload — a dict carried to the destination and stamped into the
 session's `server_data`. Multiplex does not read it and has no opinion about what it means.
 

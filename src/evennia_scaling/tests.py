@@ -1010,6 +1010,839 @@ class TestStartupValidation(TestCase):
         self.assertIsNone(self._check())
 
 
+class _PlayingSession:
+    """A Server session, reduced to what the sending paths read.
+
+    Named apart from the arrival side's stand-in: both are sessions, and
+    the two halves touch different fields.
+    """
+
+    def __init__(self, address="10.0.0.7", puppet=None):
+        self.address = address
+        self.puppet = puppet
+
+
+class TestHandoff(TestCase):
+    """HO — sending a session and what it plays to another instance."""
+
+    #: The handoff writes to all three: the game database, the archive it
+    #: copies into, and the bus it announces on.
+    databases = {"default", "archive", "messagebus"}
+
+    _next = 0
+
+    def setUp(self):
+        from evennia.utils.idmapper.models import flush_cache
+
+        super().setUp()
+        flush_cache()
+
+    def _playing(self):
+        """An account with a character it is playing, on the router."""
+        from evennia.utils.create import create_account
+
+        from tests.game_typeclasses import ScalingAccount
+
+        TestHandoff._next += 1
+        name = f"rowan{TestHandoff._next}"
+        account = create_account(
+            name,
+            f"{name}@example.com",
+            "testpassword123",
+            typeclass=ScalingAccount,
+        )
+        character, errors = account.create_character(
+            key=f"Char{TestHandoff._next}",
+            typeclass="tests.game_typeclasses.ScalingCharacter",
+        )
+        self.assertFalse(errors, errors)
+        return account, character
+
+    def _transfer(self, account, character, to_instance="shard0"):
+        """Run a transfer with the two outside calls captured.
+
+        `send_session` reaches the Portal and `delay` reaches the reactor;
+        neither exists in a test, and both are what the cases assert about.
+        """
+        from unittest import mock
+
+        from twisted.internet.defer import Deferred
+
+        from evennia_scaling.handoff import transfer_to_instance
+
+        pending = Deferred()
+        with mock.patch(
+            "evennia_scaling.handoff.send_session", return_value=pending
+        ) as send, mock.patch("evennia_scaling.handoff.delay") as delay:
+            returned = transfer_to_instance(
+                account, _PlayingSession(), character, to_instance
+            )
+        return returned, send, delay, pending
+
+    def _fire(self, account, character, outcome, moved=False):
+        """Run a transfer and fire the move's Deferred with an outcome.
+
+        `send_session` answers over the network, so the outcome arrives
+        after the call returns. Firing the Deferred by hand is what stands
+        in for the Portal replying.
+        """
+        from unittest import mock
+
+        from twisted.internet.defer import Deferred
+
+        from evennia_scaling.handoff import transfer_to_instance
+
+        pending = Deferred()
+        with mock.patch(
+            "evennia_scaling.handoff.send_session", return_value=pending
+        ), mock.patch("evennia_scaling.handoff.delay"), mock.patch(
+            "evennia_scaling.handoff.scaling_log"
+        ) as log, mock.patch.object(
+            type(account), "msg"
+        ) as msg:
+            transfer_to_instance(
+                account, _PlayingSession(), character, "shard0"
+            )
+            pending.callback((moved, outcome))
+        return log, msg
+
+    def test_ho_08_a_successful_move_is_quiet(self):
+        """HO-08: nothing went wrong, so there is nothing to say.
+
+        Logging every successful move would bury the ones that failed.
+        """
+        account, character = self._playing()
+        log, msg = self._fire(account, character, "moved", moved=True)
+
+        log.assert_not_called()
+        msg.assert_not_called()
+
+    def test_ho_09_an_unattached_destination_is_logged_and_reported(self):
+        """HO-09: the instance is down.
+
+        The player asked to go somewhere and did not arrive, and an
+        operator needs to know which instance was unreachable.
+        """
+        account, character = self._playing()
+        log, msg = self._fire(account, character, "not_attached")
+
+        self.assertIn("shard0", log.call_args.args[0])
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+        msg.assert_called_once()
+
+    def test_ho_10_a_rejected_move_is_logged_and_reported(self):
+        """HO-10: the destination would not take the session.
+
+        It was put back, so the player is still here and reachable.
+        """
+        account, character = self._playing()
+        log, msg = self._fire(account, character, "rejected")
+
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+        msg.assert_called_once()
+
+    def test_ho_11_a_stranded_session_is_logged_and_not_reported(self):
+        """HO-11: released, the build failed, the rollback failed too.
+
+        There is no instance holding the session, so a message would go
+        nowhere. The log is the only record there will be.
+        """
+        account, character = self._playing()
+        log, msg = self._fire(account, character, "stranded")
+
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+        msg.assert_not_called()
+
+    def test_ho_12_a_missing_session_is_logged_and_not_reported(self):
+        """HO-12: usually a player who dropped mid-move.
+
+        Nobody is behind the session to read a message.
+        """
+        account, character = self._playing()
+        log, msg = self._fire(account, character, "no_such_session")
+
+        self.assertEqual(log.call_args.kwargs["level"], "WARNING")
+        msg.assert_not_called()
+
+    def test_ho_13_already_there_is_logged_and_not_reported(self):
+        """HO-13: not a failure, and not the library's to narrate.
+
+        On a router it should be unreachable — the router is never in
+        `SCALING_SHARDS` — so it means something upstream is wrong.
+        """
+        account, character = self._playing()
+        log, msg = self._fire(account, character, "already_there")
+
+        self.assertEqual(log.call_args.kwargs["level"], "WARNING")
+        msg.assert_not_called()
+
+    def test_ho_14_an_error_is_logged_and_reported(self):
+        """HO-14: what arrives when the move itself broke.
+
+        Without an errback it disappears into the Deferred and surfaces at
+        garbage-collection time, if at all. The player is told because
+        nothing is known about reachability and silence is the worse guess.
+        """
+        from unittest import mock
+
+        from twisted.internet.defer import Deferred
+
+        from evennia_scaling.handoff import transfer_to_instance
+
+        account, character = self._playing()
+        pending = Deferred()
+        with mock.patch(
+            "evennia_scaling.handoff.send_session", return_value=pending
+        ), mock.patch("evennia_scaling.handoff.delay"), mock.patch(
+            "evennia_scaling.handoff.scaling_log"
+        ) as log, mock.patch.object(type(account), "msg") as msg:
+            transfer_to_instance(
+                account, _PlayingSession(), character, "shard0"
+            )
+            pending.errback(RuntimeError("the amp link went away"))
+
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+        msg.assert_called_once()
+
+    def test_ho_01_archives_the_account_and_the_character(self):
+        """HO-01: the destination rebuilds from the archive, not from here.
+
+        The account is archived now rather than when the session closes,
+        because the destination rebuilds on arrival while this instance is
+        still tearing its session down.
+        """
+        from evennia_archive.models import ArchiveRecord
+
+        account, character = self._playing()
+        self._transfer(account, character)
+
+        archived = set(
+            ArchiveRecord.objects.using("archive").values_list("pk", flat=True)
+        )
+        self.assertIn(account.archive_id, {str(pk) for pk in archived})
+        self.assertIn(character.archive_id, {str(pk) for pk in archived})
+
+    def test_ho_02_mints_a_ticket_naming_both_and_the_destination(self):
+        """HO-02: the destination has to know who is arriving.
+
+        Both ids and where it is addressed — a ticket missing any of them
+        cannot admit anyone.
+        """
+        from unittest import mock
+
+        account, character = self._playing()
+        with mock.patch(
+            "evennia_scaling.handoff.SessionAuthorized"
+        ) as message:
+            self._transfer(account, character)
+
+        ticket = message.send.call_args.kwargs["payload"]
+        self.assertEqual(ticket["account_archive_id"], account.archive_id)
+        self.assertEqual(ticket["character_archive_id"], character.archive_id)
+        self.assertEqual(ticket["to_instance"], "shard0")
+
+    def test_ho_03_sends_the_ticket_over_the_bus(self):
+        """HO-03: the destination learns of the transfer independently.
+
+        The session carries the same ticket, and having both is what lets
+        an arrival be checked against something it was told separately.
+        """
+        from unittest import mock
+
+        account, character = self._playing()
+        with mock.patch(
+            "evennia_scaling.handoff.SessionAuthorized"
+        ) as message:
+            self._transfer(account, character, "shard1")
+
+        self.assertEqual(message.send.call_args.args[0], "shard1")
+
+    def test_ho_04_defers_the_character_delete(self):
+        """HO-04: `CmdIC` still uses the character after this returns.
+
+        It writes `_last_puppet` and logs against it, so an inline delete
+        makes Evennia serialise a dead object. `delay(0, ...)` is
+        `reactor.callLater(0, ...)`, which cannot run until the stack
+        unwinds — structurally after, not merely likely to be.
+        """
+        account, character = self._playing()
+        _, _, delay, _ = self._transfer(account, character)
+
+        delay.assert_called_once_with(0, character.delete)
+
+    def test_ho_05_hands_the_session_off_carrying_the_ticket(self):
+        """HO-05: the payload is how the destination recognises it."""
+        import json
+        from unittest import mock
+
+        from evennia_scaling.sessions import SCALING_TICKET_KEY
+
+        account, character = self._playing()
+        with mock.patch(
+            "evennia_scaling.handoff.SessionAuthorized"
+        ) as message:
+            _, send, _, _ = self._transfer(account, character)
+
+        ticket = message.send.call_args.kwargs["payload"]
+        session, destination, payload = send.call_args.args
+        self.assertEqual(destination, "shard0")
+        self.assertEqual(
+            json.loads(payload)[SCALING_TICKET_KEY], ticket["token"]
+        )
+
+    def test_ho_06_does_not_delete_the_account(self):
+        """HO-06: the session is still live and still needs it.
+
+        Deleting an account out from under a live session disconnects it —
+        Evennia's own `delete` does that deliberately.
+        """
+        from evennia.accounts.models import AccountDB
+
+        account, character = self._playing()
+        pk = account.pk
+        self._transfer(account, character)
+
+        self.assertTrue(AccountDB.objects.filter(pk=pk).exists())
+
+    def test_ho_07_returns_the_outcome_of_the_move(self):
+        """HO-07: a destination that is down refuses the move.
+
+        Swallowing that means a player asks to go in character and sees
+        nothing at all.
+        """
+        account, character = self._playing()
+        returned, _, _, pending = self._transfer(account, character)
+
+        self.assertIs(returned, pending)
+
+
+class TestGoingInCharacter(TestCase):
+    """IC — going in character."""
+
+    databases = {"default", "archive", "messagebus"}
+
+    _next = 0
+
+    def setUp(self):
+        from evennia.utils.idmapper.models import flush_cache
+
+        super().setUp()
+        flush_cache()
+
+    def _playing(self):
+        from evennia.utils.create import create_account
+
+        from tests.game_typeclasses import ScalingAccount
+
+        TestGoingInCharacter._next += 1
+        name = f"rowan{TestGoingInCharacter._next}"
+        account = create_account(
+            name,
+            f"{name}@example.com",
+            "testpassword123",
+            typeclass=ScalingAccount,
+        )
+        character, errors = account.create_character(
+            key=f"Char{TestGoingInCharacter._next}",
+            typeclass="tests.game_typeclasses.ScalingCharacter",
+        )
+        self.assertFalse(errors, errors)
+        return account, character
+
+    def _puppet(self, account, character, session=None):
+        """Call `puppet_object` with the transfer and Evennia's both captured."""
+        from unittest import mock
+
+        from evennia.accounts.accounts import DefaultAccount
+
+        with mock.patch(
+            "evennia_scaling.handoff.transfer_to_instance"
+        ) as transfer, mock.patch.object(
+            DefaultAccount, "puppet_object"
+        ) as evennias:
+            account.puppet_object(
+                session if session is not None else _PlayingSession(), character
+            )
+        return transfer, evennias
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ic_01_a_shard_puppets_normally(self):
+        """IC-01: a character is played on a shard, so this is where it lands.
+
+        The interception is the router's behaviour, not the library's.
+        """
+        account, character = self._playing()
+        transfer, evennias = self._puppet(account, character)
+
+        evennias.assert_called_once()
+        transfer.assert_not_called()
+
+    @override_settings(SCALING_ROLE="router")
+    def test_ic_02_a_router_does_not_puppet(self):
+        """IC-02: going in character means going somewhere else.
+
+        Returning without puppeting is a shape the method already uses —
+        Evennia does the same for no permission and for too many puppets.
+        """
+        account, character = self._playing()
+        _, evennias = self._puppet(account, character)
+
+        evennias.assert_not_called()
+
+    @override_settings(SCALING_ROLE="router")
+    def test_ic_03_a_router_hands_the_session_to_the_transfer(self):
+        """IC-03: the destination is the character's own shard.
+
+        Not a setting and not the caller's choice — where a character is in
+        the world is what decides where the session goes.
+        """
+        account, character = self._playing()
+        character.current_shard = "shard1"
+        session = _PlayingSession()
+
+        transfer, _ = self._puppet(account, character, session)
+
+        transfer.assert_called_once_with(
+            account, session, character, "shard1"
+        )
+
+    @override_settings(SCALING_ROLE="router")
+    def test_ic_04_a_character_they_cannot_puppet_is_refused(self):
+        """IC-04: without the lock a builder could move someone else's character.
+
+        The one check of Evennia's that still means something here.
+        """
+        account, character = self._playing()
+        character.locks.add("puppet:false()")
+
+        transfer, evennias = self._puppet(account, character)
+
+        transfer.assert_not_called()
+        evennias.assert_not_called()
+
+    @override_settings(SCALING_ROLE="router")
+    def test_ic_05_a_missing_object_or_session_raises(self):
+        """IC-05: Evennia raises here, and `CmdIC` handles that.
+
+        Returning quietly instead would leave the command reporting
+        success for a puppet that never happened.
+        """
+        from unittest import mock
+
+        account, character = self._playing()
+        with mock.patch("evennia_scaling.handoff.transfer_to_instance"):
+            with self.assertRaises(RuntimeError):
+                account.puppet_object(_PlayingSession(), None)
+            with self.assertRaises(RuntimeError):
+                account.puppet_object(None, character)
+
+    @override_settings(SCALING_ROLE="router")
+    def test_ic_06_a_superuser_puppets_normally(self):
+        """IC-06: a superuser belongs to the instance it was made on.
+
+        Transferring one archives and deletes an account the instance
+        needs, and Evennia expects #1 to be there.
+        """
+        account, character = self._playing()
+        account.is_superuser = True
+        account.save()
+
+        transfer, evennias = self._puppet(account, character)
+
+        evennias.assert_called_once()
+        transfer.assert_not_called()
+
+
+class TestGoingOutOfCharacter(TestCase):
+    """OC — going out of character."""
+
+    databases = {"default", "archive", "messagebus"}
+
+    _next = 0
+
+    def setUp(self):
+        from evennia.utils.idmapper.models import flush_cache
+
+        super().setUp()
+        flush_cache()
+
+    def _playing(self):
+        from evennia.utils.create import create_account
+
+        from tests.game_typeclasses import ScalingAccount
+
+        TestGoingOutOfCharacter._next += 1
+        name = f"rowan{TestGoingOutOfCharacter._next}"
+        account = create_account(
+            name,
+            f"{name}@example.com",
+            "testpassword123",
+            typeclass=ScalingAccount,
+        )
+        character, errors = account.create_character(
+            key=f"Char{TestGoingOutOfCharacter._next}",
+            typeclass="tests.game_typeclasses.ScalingCharacter",
+        )
+        self.assertFalse(errors, errors)
+        return account, character
+
+    def _unpuppet(self, account, sessions):
+        """Release, with the archive and the log captured.
+
+        Evennia's own `unpuppet_object` is stubbed: it needs a real session
+        with a handler behind it, and what these cases are about is what
+        happens either side of it.
+        """
+        from unittest import mock
+
+        from evennia.accounts.accounts import DefaultAccount
+
+        with mock.patch.object(DefaultAccount, "unpuppet_object"), mock.patch(
+            "evennia_archive.api.archive"
+        ) as archive, mock.patch(
+            "evennia_scaling.mixins.scaling_log"
+        ) as log:
+            account.unpuppet_object(sessions)
+        return archive, log
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_oc_01_archives_the_account_and_the_character(self):
+        """OC-01: the archive is what the router rebuilds them from."""
+        account, character = self._playing()
+        archive, _ = self._unpuppet(account, _PlayingSession(puppet=character))
+
+        archived = [call.args[0] for call in archive.call_args_list]
+        self.assertIn(account, archived)
+        self.assertIn(character, archived)
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_oc_02_deletes_nothing_and_transfers_nothing(self):
+        """OC-02: this also runs on a dropout and at shutdown.
+
+        Deleting there would cost a player their position for a
+        five-second disconnect, and make closing the browser mid-fight the
+        way out of it.
+        """
+        from unittest import mock
+
+        from evennia.accounts.models import AccountDB
+        from evennia.objects.models import ObjectDB
+
+        account, character = self._playing()
+        with mock.patch(
+            "evennia_scaling.handoff.transfer_to_instance"
+        ) as transfer:
+            self._unpuppet(account, _PlayingSession(puppet=character))
+
+        transfer.assert_not_called()
+        self.assertTrue(AccountDB.objects.filter(pk=account.pk).exists())
+        self.assertTrue(ObjectDB.objects.filter(pk=character.pk).exists())
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_oc_03_a_session_with_no_puppet_archives_nothing(self):
+        """OC-03: there is nothing whose state needs capturing.
+
+        Archiving the account anyway would write a copy nobody asked for
+        over one another instance may hold.
+        """
+        account, _ = self._playing()
+        archive, _ = self._unpuppet(account, _PlayingSession())
+
+        archive.assert_not_called()
+
+    @override_settings(SCALING_ROLE="router")
+    def test_oc_04_a_router_logs_a_puppeted_character_as_a_breach(self):
+        """OC-04: `puppet_object` never puppets here.
+
+        So finding one puppeted means something got past the interception —
+        a bug worth tracking down. Logged rather than handled, because
+        guessing at a recovery would hide it.
+        """
+        account, character = self._playing()
+        _, log = self._unpuppet(account, _PlayingSession(puppet=character))
+
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+        # Named, so the line says who to ask and what to look at.
+        message = log.call_args.args[0]
+        self.assertIn(account.archive_id, message)
+        self.assertIn(character.archive_id, message)
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_oc_05_a_superuser_is_not_archived(self):
+        """OC-05: it does not travel, so a copy could only overwrite.
+
+        The one the instance depends on is the one it would overwrite.
+        """
+        account, character = self._playing()
+        account.is_superuser = True
+        account.save()
+
+        archive, _ = self._unpuppet(account, _PlayingSession(puppet=character))
+
+        archive.assert_not_called()
+
+    @override_settings(SCALING_ROLE="shard", MAX_NR_CHARACTERS=2)
+    def test_oc_06_a_list_of_sessions_archives_every_character(self):
+        """OC-06: `unpuppet_all()` passes them all, before every shutdown.
+
+        Reading `.puppet` off the parameter works on every runtime path and
+        raises on every shutdown, with nothing in any log.
+        """
+        account, first = self._playing()
+        second, errors = account.create_character(
+            key="Second", typeclass="tests.game_typeclasses.ScalingCharacter"
+        )
+        self.assertFalse(errors, errors)
+
+        archive, _ = self._unpuppet(
+            account,
+            [_PlayingSession(puppet=first), _PlayingSession(puppet=second)],
+        )
+
+        archived = [call.args[0] for call in archive.call_args_list]
+        self.assertIn(first, archived)
+        self.assertIn(second, archived)
+
+    @override_settings(SCALING_ROLE="shard", MAX_NR_CHARACTERS=2)
+    def test_oc_07_the_account_is_archived_once(self):
+        """OC-07: this runs while the server is trying to exit."""
+        account, first = self._playing()
+        second, errors = account.create_character(
+            key="Second", typeclass="tests.game_typeclasses.ScalingCharacter"
+        )
+        self.assertFalse(errors, errors)
+
+        archive, _ = self._unpuppet(
+            account,
+            [_PlayingSession(puppet=first), _PlayingSession(puppet=second)],
+        )
+
+        archived = [call.args[0] for call in archive.call_args_list]
+        self.assertEqual(archived.count(account), 1)
+
+    @override_settings(SCALING_ROLE="router")
+    def test_oc_08_a_superuser_on_the_router_is_not_a_breach(self):
+        """OC-08: superusers do puppet on the router.
+
+        Reporting them would bury the real thing under routine noise. The
+        archive skip runs before the breach check, and that ordering is
+        what makes this true.
+        """
+        account, character = self._playing()
+        account.is_superuser = True
+        account.save()
+
+        _, log = self._unpuppet(account, _PlayingSession(puppet=character))
+
+        log.assert_not_called()
+
+
+class TestOOCCommand(TestCase):
+    """OC — the replaced `ooc` command."""
+
+    databases = {"default", "archive", "messagebus"}
+
+    _next = 0
+
+    def setUp(self):
+        from evennia.utils.idmapper.models import flush_cache
+
+        super().setUp()
+        flush_cache()
+
+    def _playing(self, puppeted=True):
+        from unittest import mock
+
+        from evennia.utils.create import create_account
+
+        from tests.game_typeclasses import ScalingAccount
+
+        TestOOCCommand._next += 1
+        name = f"rowan{TestOOCCommand._next}"
+        account = create_account(
+            name,
+            f"{name}@example.com",
+            "testpassword123",
+            typeclass=ScalingAccount,
+        )
+        character, errors = account.create_character(
+            key=f"Char{TestOOCCommand._next}",
+            typeclass="tests.game_typeclasses.ScalingCharacter",
+        )
+        self.assertFalse(errors, errors)
+        # `get_puppet` needs a real session handler behind it; what these
+        # cases are about is what the command does with its answer.
+        account.get_puppet = mock.Mock(
+            return_value=character if puppeted else None
+        )
+        return account, character
+
+    def _ooc(self, account):
+        """Run the command, with everything it reaches out to captured."""
+        from unittest import mock
+
+        from evennia_scaling.commands import ScalingCmdOOC
+
+        # Evennia's own class, reached through the bases: `ready()` replaces
+        # `evennia.commands.default.account.CmdOOC` with ours, so importing
+        # that name gives back the class under test.
+        evennias_class = ScalingCmdOOC.__bases__[0]
+
+        command = ScalingCmdOOC()
+        command.account = account
+        command.session = _PlayingSession()
+        command.msg = mock.Mock()
+
+        with mock.patch(
+            "evennia_scaling.handoff.transfer_to_instance"
+        ) as transfer, mock.patch(
+            "evennia_scaling.handoff.send_session"
+        ) as send, mock.patch(
+            "evennia_scaling.commands.scaling_log"
+        ) as log, mock.patch.object(
+            evennias_class, "func"
+        ) as evennias, mock.patch.object(
+            type(account), "unpuppet_object"
+        ) as unpuppet:
+            command.func()
+        return transfer, send, log, evennias, unpuppet, command
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_oc_09_a_shard_transfers_the_session_to_the_router(self):
+        """OC-09: nobody is ever out of character on a shard."""
+        account, character = self._playing()
+        transfer, _, _, _, _, command = self._ooc(account)
+
+        transfer.assert_called_once_with(
+            account, command.session, character, "router"
+        )
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_oc_10_a_shard_does_not_call_evennias_func(self):
+        """OC-10: it ends by rendering the character-select menu.
+
+        A shard holds one character and no roster, so a menu there offers a
+        choice that does not exist.
+        """
+        account, _ = self._playing()
+        _, _, _, evennias, _ = self._ooc(account)[:5]
+
+        evennias.assert_not_called()
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_oc_11_reads_the_character_before_the_unpuppet(self):
+        """OC-11: unpuppeting clears `session.puppet`.
+
+        Read after, and the transfer is handed nothing to archive.
+        """
+        account, character = self._playing()
+        transfer, _, _, _, unpuppet, _ = self._ooc(account)
+
+        unpuppet.assert_called_once()
+        self.assertEqual(transfer.call_args.args[2], character)
+
+    @override_settings(SCALING_ROLE="router")
+    def test_oc_12_a_router_transfers_nothing(self):
+        """OC-12: this is where out of character happens."""
+        account, _ = self._playing()
+        transfer, _, _, _, _, _ = self._ooc(account)
+
+        transfer.assert_not_called()
+
+    @override_settings(SCALING_ROLE="router")
+    def test_oc_13_a_router_is_evennias_ordinary_behaviour(self):
+        """OC-13: the router is where out of character happens.
+
+        Including the state that should not exist — a character puppeted
+        here — where falling through unpuppets them *and tells them so*,
+        rather than changing their state and showing them nothing.
+        """
+        account, _ = self._playing()
+        transfer, send, _, evennias, _, _ = self._ooc(account)
+
+        evennias.assert_called_once()
+        transfer.assert_not_called()
+        send.assert_not_called()
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_oc_14_a_shard_sends_a_stranded_session_home(self):
+        """OC-14: a state no path here can produce.
+
+        They can neither go out of character nor in as a character they do
+        not have. Sent home without a ticket — a character-less ticket
+        would mean changes across minting and reconstitution to improve an
+        error path — and they log in again.
+        """
+        account, _ = self._playing(puppeted=False)
+        transfer, send, log, _, _, command = self._ooc(account)
+
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+        send.assert_called_once_with(command.session, "router")
+        transfer.assert_not_called()
+
+    def test_oc_15_ready_installs_the_command(self):
+        """OC-15: `CMDSET_ACCOUNT` names a gamedir module.
+
+        It imports `evennia.default_cmds`, which is not populated while
+        `ready()` runs, so the module attribute is replaced instead — which
+        is what `AccountCmdSet.at_cmdset_creation` reads when a session is
+        built, long after startup.
+        """
+        from django.apps import apps as django_apps
+        from evennia.commands.default import account as account_commands
+
+        from evennia_scaling.commands import ScalingCmdOOC
+
+        django_apps.get_app_config("evennia_scaling").ready()
+        self.assertIs(account_commands.CmdOOC, ScalingCmdOOC)
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_oc_16_a_superuser_goes_ooc_where_it_stands(self):
+        """OC-16: a superuser belongs to the instance it was made on.
+
+        Without this it would be archived, its character deleted, and it
+        would land on the router.
+        """
+        account, _ = self._playing()
+        account.is_superuser = True
+        account.save()
+
+        transfer, _, _, evennias, _, _ = self._ooc(account)
+
+        evennias.assert_called_once()
+        transfer.assert_not_called()
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_oc_17_the_stranded_recovery_reports_its_outcome(self):
+        """OC-17: otherwise it is the one move that fails silently.
+
+        It has no account or character to archive, so it is a bare session
+        move — but the router being down matters just as much here.
+        """
+        from unittest import mock
+
+        from twisted.internet.defer import Deferred
+
+        from evennia_scaling.commands import ScalingCmdOOC
+
+        account, _ = self._playing(puppeted=False)
+        command = ScalingCmdOOC()
+        command.account = account
+        command.session = _PlayingSession()
+        command.msg = mock.Mock()
+
+        pending = Deferred()
+        with mock.patch(
+            "evennia_scaling.handoff.send_session", return_value=pending
+        ), mock.patch("evennia_scaling.commands.scaling_log"), mock.patch(
+            "evennia_scaling.handoff.scaling_log"
+        ) as log:
+            command.func()
+            pending.callback((False, "not_attached"))
+
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+
+
 class _FakeMessage:
     """Stands in for a bus row — the two fields a handler reads."""
 
