@@ -22,3 +22,47 @@ def get_ticket_lifetime() -> int:
     return int(
         getattr(settings, SETTING_TICKET_LIFETIME, DEFAULT_TICKET_LIFETIME)
     )
+
+
+SETTING_ROLE = "SCALING_ROLE"
+
+#: A router is where players log in and choose a character; a shard is where a
+#: character is played. There is no third role. `evennia-shards` carries a
+#: dormant `monolith` mode so a game can be built on it and grow into a split
+#: deployment later; the equivalent is out of scope here, because installing
+#: this library means at least a router and one shard.
+ROLE_ROUTER = "router"
+ROLE_SHARD = "shard"
+ROLES = (ROLE_ROUTER, ROLE_SHARD)
+
+
+def get_role():
+    """Return this instance's role, refusing anything that is not one.
+
+    Deliberately has no default. An accessor normally supplies one so a
+    consumer who declared nothing still works, but there is no harmless
+    default available here — with no monolith mode, an instance that does not
+    know whether it is a router or a shard cannot do anything correct. So an
+    undeclared role is a refusal rather than a guess, which is the position
+    `evennia-message-bus` takes on its instance id for the same reason.
+
+    `AppConfig.ready()` calls this, so the refusal happens at boot rather than
+    wherever something first needs the role.
+    """
+    from django.conf import settings
+    from django.core.exceptions import ImproperlyConfigured
+
+    role = getattr(settings, SETTING_ROLE, None)
+    if role is None:
+        raise ImproperlyConfigured(
+            f"{SETTING_ROLE} is not set. Every instance running "
+            f"evennia-scaling is either {ROLE_ROUTER!r} or {ROLE_SHARD!r}, "
+            f"and there is no default — an instance that does not know which "
+            f"it is cannot route a session or hold a character correctly."
+        )
+    if role not in ROLES:
+        raise ImproperlyConfigured(
+            f"{SETTING_ROLE} is {role!r}, which is not a role. Valid values "
+            f"are {ROLE_ROUTER!r} and {ROLE_SHARD!r}."
+        )
+    return role

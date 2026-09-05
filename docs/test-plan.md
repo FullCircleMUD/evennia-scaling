@@ -16,6 +16,7 @@ Behaviour is agreed here first, before any test or code — see
 | Prefix | Covers |
 |---|---|
 | `CF` | Settings, each behind an accessor |
+| `MS` | Messages between instances |
 | `SC` | The scaffold — the library is installed and the runner reaches it |
 | `TK` | Tickets — what lets an arriving session be recognised |
 
@@ -50,9 +51,58 @@ and a consumer overriding one changes every reader at once.
 **The defaults are commitments.** A consumer who sets nothing gets them, so a case pins each one — the
 value can change, but not by accident and not without the plan saying so.
 
+**A setting with no safe default is checked at boot.** `SCALING_ROLE` has none: an instance that does
+not know whether it is a router or a shard cannot behave correctly in any direction, so refusing is the
+honest answer and guessing hides the mistake until it costs more. `evennia-shards` can default to a
+dormant `monolith` mode and do nothing; installing this library means at least a router and one shard,
+so there is no equivalent to fall back on.
+
+The accessor raising is not enough on its own. It raises when something first calls it, and on a router
+that may be the first player to connect — so a misconfigured instance boots cleanly and fails somewhere
+that says nothing about the setting. `AppConfig.ready()` calls the accessor so the failure happens at
+startup, naming what to add.
+
+**Two roles, and no third.** A router is where players log in and choose a character; a shard is where
+a character is played.
+
+`[TBD — needs review once the library does something with a role: nothing reads `get_role` today except
+the boot check that demands it. If the transfer ends up not branching on role at all, the setting, its
+constants and the check that refuses without it all go — a required setting nothing consults is a
+consumer obligation for nothing.]`
+
 | ID | Case | Test function |
 |---|---|---|
 | CF-01 | The ticket lifetime defaults to ten seconds when the setting is absent | test_cf_01_the_ticket_lifetime_defaults_to_ten_seconds |
+| CF-02 | An undeclared `SCALING_ROLE` is refused, naming the setting | test_cf_02_an_undeclared_role_is_refused |
+| CF-03 | A value that is neither role is refused, listing the two that are | test_cf_03_an_unknown_role_lists_the_valid_ones |
+| CF-04 | `ready()` checks the required settings, so a misconfigured instance does not start | test_cf_04_ready_checks_the_required_settings |
+
+### MS — messages between instances
+
+`SessionAuthorized` carries a ticket to the instance a session is about to arrive at, so the receiver
+learns about a transfer independently of the session that then shows up. Past tense in the name because
+it is true the moment the ticket is minted and stays true through every retry — a name claiming arrival
+would be wrong on every attempt but the last.
+
+**One type, one handler.** A router and a shard do the same thing with the message: store the ticket so
+an arriving session can be checked against it. When the two roles need to diverge, the branch goes in
+then — a branch whose arms are identical is a claim about the future rather than a behaviour.
+
+**`payload_keys` is exactly what `create_ticket` returns.** Message-bus checks those keys before a send,
+so a malformed ticket is refused where it was minted rather than arriving somewhere as a payload the far
+end cannot use.
+
+**The class registers itself on import.** Both ends need it — the sender to call `send`, the receiver to
+find a handler for an arriving message — so the registration is an import side effect and the module has
+to be imported somewhere that runs on every instance.
+
+| ID | Case | Test function |
+|---|---|---|
+| MS-01 | The kind is `session_authorized` | test_ms_01_kind_is_session_authorized |
+| MS-02 | `payload_keys` names exactly what `create_ticket` returns, so a malformed ticket is refused before it is sent | test_ms_02_payload_keys_match_a_ticket |
+| MS-03 | Handling a message stores the ticket | test_ms_03_handling_stores_the_ticket |
+| MS-04 | A handled message is consumed rather than left to be retried | test_ms_04_a_handled_message_is_consumed |
+| MS-05 | The class registers itself on import, so a peer's message finds a handler | test_ms_05_registers_itself_on_import |
 
 ### TK — tickets
 

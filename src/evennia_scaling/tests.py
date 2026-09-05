@@ -203,3 +203,122 @@ class TestConfig(TestCase):
         from evennia_scaling.config import get_ticket_lifetime
 
         self.assertEqual(get_ticket_lifetime(), 10)
+
+    @override_settings(SCALING_ROLE=None)
+    def test_cf_02_an_undeclared_role_is_refused(self):
+        """CF-02: there is no harmless default to fall back on.
+
+        `evennia-shards` can default to a dormant monolith mode and do
+        nothing. Installing this library means at least a router and one
+        shard, so an instance that does not know which it is cannot behave
+        correctly in any direction.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import get_role
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            get_role()
+        self.assertIn("SCALING_ROLE", str(raised.exception))
+
+    @override_settings(SCALING_ROLE="banana")
+    def test_cf_03_an_unknown_role_lists_the_valid_ones(self):
+        """CF-03: a typo is caught at boot, not at the first branch.
+
+        Listing the two valid values is what makes the line actionable —
+        otherwise it reports a problem without saying what would fix it.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import ROLE_ROUTER, ROLE_SHARD, get_role
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            get_role()
+        message = str(raised.exception)
+        self.assertIn(ROLE_ROUTER, message)
+        self.assertIn(ROLE_SHARD, message)
+
+    def test_cf_04_ready_checks_the_required_settings(self):
+        """CF-04: the accessor raising is not enough on its own.
+
+        It raises when something first calls it, and on a router that may be
+        the first player to connect — so a misconfigured instance boots
+        cleanly and fails somewhere that says nothing about the setting.
+        """
+        from unittest import mock
+
+        from django.apps import apps as django_apps
+
+        config = django_apps.get_app_config("evennia_scaling")
+        with mock.patch("evennia_scaling.config.get_role") as checking:
+            config.ready()
+        checking.assert_called_once()
+
+
+class _FakeMessage:
+    """Stands in for a bus row — the two fields a handler reads."""
+
+    def __init__(self, payload, from_instance="somewhere-else"):
+        self.payload = payload
+        self.from_instance = from_instance
+
+
+class TestMessages(TestCase):
+    """MS — messages between instances."""
+
+    def _message(self):
+        return _FakeMessage(
+            create_ticket("account-a", "character-a", "shard0")
+        )
+
+    def test_ms_01_kind_is_session_authorized(self):
+        """MS-01: the name both ends route on."""
+        from evennia_scaling.messages import SessionAuthorized
+
+        self.assertEqual(SessionAuthorized.kind, "session_authorized")
+
+    def test_ms_02_payload_keys_match_a_ticket(self):
+        """MS-02: a malformed ticket is refused where it was minted.
+
+        Message-bus checks these before a send, so a missing field fails at
+        the sender rather than arriving somewhere as a payload the far end
+        cannot use.
+        """
+        from evennia_scaling.messages import SessionAuthorized
+
+        ticket = create_ticket("account-a", "character-a", "shard0")
+        self.assertEqual(
+            set(SessionAuthorized.payload_keys), set(ticket.keys())
+        )
+
+    def test_ms_03_handling_stores_the_ticket(self):
+        """MS-03: the receiver learns of a transfer before the session lands."""
+        from evennia_scaling.messages import SessionAuthorized
+        from evennia_scaling.models import Ticket
+
+        message = self._message()
+        SessionAuthorized().handle(message)
+
+        stored = Ticket.objects.get(token=message.payload["token"])
+        self.assertEqual(
+            stored.account_archive_id, message.payload["account_archive_id"]
+        )
+        self.assertEqual(stored.to_instance, message.payload["to_instance"])
+
+    def test_ms_04_a_handled_message_is_consumed(self):
+        """MS-04: returning False would leave it to be retried forever."""
+        from evennia_scaling.messages import SessionAuthorized
+
+        self.assertIs(SessionAuthorized().handle(self._message()), True)
+
+    def test_ms_05_registers_itself_on_import(self):
+        """MS-05: a peer's message has to find a handler.
+
+        Both ends need the class — the sender to call `send`, the receiver to
+        dispatch — so registration is an import side effect.
+        """
+        from evennia_message_bus import get_type
+
+        from evennia_scaling.messages import SessionAuthorized
+
+        self.assertIs(get_type("session_authorized"), SessionAuthorized)

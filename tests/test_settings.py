@@ -37,6 +37,10 @@ DATABASES = {
     },
 }
 
+# This instance's role. Required — the library refuses to boot without it, so
+# the suite has to declare one as any configured instance would.
+SCALING_ROLE = "router"
+
 # Required Django bits
 SECRET_KEY = "test-only-secret"
 TEST_ENVIRONMENT = True
