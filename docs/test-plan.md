@@ -296,15 +296,41 @@ completed at the moment of use instead.
 Nothing validates the room key. It names a row in a database this instance cannot see, so the only check
 available is that a value is present.
 
-**`ensure_location_for_transfer()` completes the pair and returns the shard.** Either half being unusable —
-a shard outside `SCALING_SHARDS`, or no room key — means the character cannot be sent anywhere, because
-*the destination is one half of the pair*. There is nowhere to send them until both halves agree, which
-is why this happens before the transfer rather than on arrival. It writes the home pair, both halves
-together: keeping a start shard with no room key would leave a destination that still cannot say where
-on it the character stands.
+**A character carries two pairs, and there is a third behind them.**
 
-The shard half looks redundant, since `at_set` refuses anything outside the roster — but `.db` bypasses
-that, and a shard removed from the roster after a character was stamped goes stale the same way.
+| | Shard | Room |
+|---|---|---|
+| Where they are | `current_shard` | `current_room_ref` |
+| Where they live | `home_shard` | `home_room_ref` |
+| The one safe place in the game | `SCALING_DEFAULT_HOME_SHARD` | `DEFAULT_HOME` |
+
+**`ensure_location_for_transfer()` walks that cascade and returns the shard.** Either half of a pair
+being unusable — a shard outside `SCALING_SHARDS`, or no room key — makes the whole pair unusable,
+because *the destination is one half of it*. There is nowhere to send them until both halves agree,
+which is why this happens before the transfer rather than on arrival.
+
+The home pair is the right second step, and the default home the wrong one to reach first. A game with a
+beginner shard and an advanced shard does not want a character with a broken location resolving to
+whatever room sits at the default on the advanced shard — they would arrive somewhere that kills them.
+Their own home is where they belong; the default home is the last resort for a character that has none.
+
+Neither home attribute has a default. One at that step would make the cascade never reach the third.
+
+**What it resolved is written back to the location pair, and never to the home pair.** The location is
+now true, and the arrival reads one place for it. Falling back to the default home is a recovery, not a
+decision that this is where the character lives from now on.
+
+The shard half of a check looks redundant, since `at_set` refuses anything outside the roster — but
+`.db` bypasses that, and a shard removed from the roster after a character was stamped goes stale the
+same way.
+
+**One property serves both shards.** "Is this a shard in this deployment" is not specific to the current
+one, so `current_shard` and `home_shard` are the same `_ShardProperty` declared twice. It names itself in
+its refusal, reading its own key off the descriptor rather than hardcoding one.
+
+`home_shard` defaults to `SCALING_DEFAULT_HOME_SHARD` — the game's home shard is the sensible home for a
+character that has not been given one. The room half has no default, and its absence is what sends the
+cascade on to the third step.
 
 Named for the transfer rather than for the character's location, because it is not the same thing:
 `character.location` is the room object the character stands in *now*, on the instance running it, and
@@ -335,7 +361,10 @@ knows nothing about this subclass. No override exists today.
 | SH-07 | `current_room_ref` is stored as an Attribute, so it survives the archive round trip | test_sh_07_the_room_ref_is_stored_as_an_attribute |
 | SH-08 | A character never assigned one reads as `None` | test_sh_08_an_unassigned_room_ref_reads_as_none |
 | SH-09 | `ensure_location_for_transfer` leaves a character with both halves alone | test_sh_09_a_complete_pair_is_left_alone |
-| SH-10 | A character missing either half is given the home pair, both halves | test_sh_10_a_broken_pair_is_replaced_by_home |
+| SH-10 | A character with a broken location and a usable home is sent home | test_sh_10_a_broken_location_falls_back_to_home |
+| SH-11 | The home pair is stored as Attributes, and `home_shard` refuses a shard outside the roster | test_sh_11_the_home_pair_is_stored_and_checked |
+| SH-12 | A character with neither a usable location nor a usable home gets the default home | test_sh_12_neither_pair_falls_back_to_the_default_home |
+| SH-13 | The resolved location is written back; the home room key is not | test_sh_13_the_home_room_is_not_written_back |
 
 ### SV — startup validation of the consumer's typeclasses
 

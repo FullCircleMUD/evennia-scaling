@@ -875,19 +875,72 @@ class TestCurrentShard(TestCase):
     @override_settings(
         SCALING_DEFAULT_HOME_SHARD="shard1", DEFAULT_HOME="#99"
     )
-    def test_sh_10_a_broken_pair_is_replaced_by_home(self):
-        """SH-10: the destination is one half of the pair.
+    def test_sh_10_a_broken_location_falls_back_to_home(self):
+        """SH-10: their own home, not the game's.
 
-        Keeping a start shard with no room key would leave a destination
-        that still cannot say where on it the character stands, so both
-        halves go together.
+        A game with a beginner shard and an advanced shard does not want a
+        character with a broken location resolving to whatever room sits at
+        the default on the advanced shard.
         """
+        character = self._character()
+        character.current_shard = "shard0"
+        character.home_shard = "shard0"
+        character.home_room_ref = 7
+
+        self.assertEqual(character.ensure_location_for_transfer(), "shard0")
+        self.assertEqual(character.current_room_ref, 7)
+
+    def test_sh_11_the_home_pair_is_stored_and_checked(self):
+        """SH-11: `character.home` is a dbref and does not survive the archive.
+
+        So a home that means anything across instances is a pair of
+        Attributes, and its shard half is checked like the other one — the
+        same property, declared twice.
+        """
+        from evennia_scaling.mixins import (
+            HOME_ROOM_REF_KEY,
+            HOME_SHARD_KEY,
+        )
+
+        character = self._character()
+        character.home_shard = "shard1"
+        character.home_room_ref = 7
+
+        self.assertTrue(character.attributes.has(HOME_SHARD_KEY))
+        self.assertTrue(character.attributes.has(HOME_ROOM_REF_KEY))
+
+        with self.assertRaises(ValueError) as raised:
+            character.home_shard = "shrad1"
+        # Named for the attribute being set, not the one the class was
+        # written for — one property serves both shards.
+        self.assertIn("home_shard", str(raised.exception))
+
+    @override_settings(
+        SCALING_DEFAULT_HOME_SHARD="shard1", DEFAULT_HOME="#99"
+    )
+    def test_sh_12_neither_pair_falls_back_to_the_default_home(self):
+        """SH-12: the last resort, for a character that has no home."""
         character = self._character()
         character.current_shard = "shard0"
 
         self.assertEqual(character.ensure_location_for_transfer(), "shard1")
         self.assertEqual(character.current_shard, "shard1")
         self.assertEqual(character.current_room_ref, "#99")
+
+    @override_settings(
+        SCALING_DEFAULT_HOME_SHARD="shard1", DEFAULT_HOME="#99"
+    )
+    def test_sh_13_the_home_room_is_not_written_back(self):
+        """SH-13: falling back to the default home is a recovery.
+
+        Not a decision that this is where the character lives from now on.
+        """
+        character = self._character()
+        character.current_shard = "shard0"
+
+        character.ensure_location_for_transfer()
+
+        self.assertIsNone(character.home_room_ref)
 
     def test_sh_06_carries_the_archive_mixin(self):
         """SH-06: one mixin on the character, not two.

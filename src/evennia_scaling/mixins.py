@@ -10,12 +10,22 @@ from evennia_archive.mixins import (
     ArchivableCharacterMixin,
 )
 
-from .config import get_shards, get_start_location_shard
+from .config import (
+    get_default_home_shard,
+    get_shards,
+    get_start_location_shard,
+)
 from .log import scaling_log
 
 #: The Attribute key holding the other half of where a character is: which
 #: room, in the database of the shard `current_shard` names.
 CURRENT_ROOM_REF_KEY = "current_room_ref"
+
+#: The same pair again, for where a character lives rather than where it is.
+#: `character.home` is a dbref and does not survive the archive, so a home
+#: that means anything across instances has to be stored this way.
+HOME_SHARD_KEY = "home_shard"
+HOME_ROOM_REF_KEY = "home_room_ref"
 
 #: The Attribute key naming where a character is in the game world.
 #: `AttributeProperty` takes its key from the attribute name, so this and the
@@ -23,8 +33,13 @@ CURRENT_ROOM_REF_KEY = "current_room_ref"
 CURRENT_SHARD_KEY = "current_shard"
 
 
-class _CurrentShardProperty(AttributeProperty):
-    """Refuses anything that is not a shard in this deployment."""
+class _ShardProperty(AttributeProperty):
+    """Refuses anything that is not a shard in this deployment.
+
+    Declared twice — for where a character is and for where it lives.
+    "Is this a shard in this deployment" is not specific to either, and one
+    class means one refusal to read and one place to change it.
+    """
 
     def at_set(self, value, obj):
         """Validate on the way in. What this returns is what is stored.
@@ -52,9 +67,12 @@ class _CurrentShardProperty(AttributeProperty):
         """
         shards = get_shards()
         if value not in shards:
+            # Named for the attribute being set: `AttributeProperty` records
+            # its own key, so the message says which one was wrong rather
+            # than the one this class was first written for.
             raise ValueError(
-                f"{CURRENT_SHARD_KEY} cannot be {value!r}. It names the shard "
-                f"a character is in, and the shards are {tuple(shards)!r}."
+                f"{self._key} cannot be {value!r}. It names a shard, and the "
+                f"shards are {tuple(shards)!r}."
             )
         return value
 
@@ -75,7 +93,7 @@ class ScalingCharacterMixin(ArchivableCharacterMixin):
 
     #: Named for CURRENT_SHARD_KEY: `AttributeProperty` takes its key from
     #: the attribute name, so the two have to agree.
-    current_shard = _CurrentShardProperty(
+    current_shard = _ShardProperty(
         # The function, not a value: settings are not loaded when this module
         # imports, and Evennia calls it at the first read.
         default=get_start_location_shard,
@@ -90,6 +108,14 @@ class ScalingCharacterMixin(ArchivableCharacterMixin):
     #: cannot see, so the only check available is that a value is present.
     current_room_ref = AttributeProperty(default=None)
 
+    #: Where the character lives, as the same pair. The shard defaults to
+    #: the game's home shard; the room does not default, and its absence is
+    #: what sends the cascade on to the default home.
+    home_shard = _ShardProperty(
+        default=get_default_home_shard, strattr=True
+    )
+    home_room_ref = AttributeProperty(default=None)
+
     def ensure_location_for_transfer(self):
         """Complete where this character would be sent, and return the shard.
 
@@ -100,32 +126,40 @@ class ScalingCharacterMixin(ArchivableCharacterMixin):
         the moment a character walks anywhere — until something restamps
         the pair.
 
-        `current_shard` and `current_room_ref` are one composite key —
-        which instance, then which room in that instance's database. A
-        shard alone does not say where a character stands.
+        A character carries two pairs, and there is a third behind them:
+        where they are, where they live, and the one safe place in the
+        game. Either half of a pair being unusable makes the whole pair
+        unusable, because **the destination is one half of it**. There is
+        nowhere to send them until both halves agree, which is why this
+        runs before a transfer rather than on arrival — and why the arrival
+        can assume both are present.
+
+        **Their own home is the second step, and the default home the
+        third.** A game with a beginner shard and an advanced shard does
+        not want a character with a broken location resolving to whatever
+        room sits at the default on the advanced shard — they would arrive
+        somewhere that kills them.
+
+        What it resolved is written back to the location pair, and never to
+        the home pair. The location is now true; falling back to the
+        default home is a recovery, not a decision that this is where the
+        character lives from now on.
 
         Returns the shard, so a call site reads as the destination it is.
-
-        Either half being unusable means the character cannot be sent
-        anywhere, because **the destination is one half of the pair**.
-        There is nowhere to send them until both halves agree, which is why
-        this runs before a transfer rather than on arrival — and why the
-        arrival can assume both are present.
-
-        Writes the home pair, both halves together. Keeping a start shard
-        with no room key would leave a destination that still cannot say
-        where on it the character stands.
-
-        The shard half looks redundant, since `at_set` refuses anything
-        outside the roster — but `.db` bypasses that, and a shard removed
-        from the roster after a character was stamped goes stale the same
-        way.
         """
         from django.conf import settings
 
-        from .config import get_default_home_shard, get_shards
+        shards = get_shards()
 
-        if self.current_shard in get_shards() and self.current_room_ref:
+        def usable(shard, room):
+            return shard in shards and room
+
+        if usable(self.current_shard, self.current_room_ref):
+            return self.current_shard
+
+        if usable(self.home_shard, self.home_room_ref):
+            self.current_shard = self.home_shard
+            self.current_room_ref = self.home_room_ref
             return self.current_shard
 
         self.current_shard = get_default_home_shard()

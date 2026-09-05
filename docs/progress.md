@@ -2,6 +2,37 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-05 — where a character lives, as a second pair
+
+123 tests. Still all on the departure side: working out what the arrival needs turned into work the
+sender has to do, so the arrival has one thing to handle rather than a set of half-configured states.
+
+- **The home pair** — `home_shard` and `home_room_ref`. `character.home` is a dbref and does not survive
+  the archive, so a home that means anything across instances has to be stored the same way a location
+  is. The shard half defaults to the game's home shard; the room half does not default, and its absence
+  is what sends the cascade on.
+- **`ensure_location_for_transfer` became a cascade** — where they are, then where they live, then the
+  one safe place in the game. Their own home is the second step and the default home the third, because
+  a game with a beginner shard and an advanced shard does not want a character with a broken location
+  resolving to whatever room sits at the default on the advanced shard.
+- **One `_ShardProperty`, declared twice.** "Is this a shard in this deployment" is not specific to
+  either pair. It names itself in its refusal, reading its own key off the descriptor.
+- **The resolved location is written back; the home pair never is.** Falling back to the default home is
+  a recovery, not a decision about where a character lives from now on.
+
+**What this buys the arrival**, which is still unbuilt: both halves are present and the shard is in the
+roster, because the sender could not have transferred them otherwise. So the arrival reads the room key
+and has one failure to handle — a key that does not resolve in this database.
+
+A rejected shape, recorded so it is not rediscovered: making `SCALING_SHARDS` a mapping of shard to home
+room, so a broken location could fall back to a home *on the shard the character was already going to*.
+It resolves somewhere in every case, which is worse than not resolving — the beginner arrives on the
+advanced shard after all.
+
+Known limit: an arriving character has no `character.home`, because the archive drops it. If their room
+is destroyed while they are playing, Evennia falls them back to that shard's `DEFAULT_HOME`. A local
+recovery from a local failure, and not what the deployment-wide home pair means.
+
 ## 2026-09-05 — where a character is, as a pair
 
 120 tests.
