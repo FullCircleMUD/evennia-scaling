@@ -14,8 +14,8 @@ This is the only instance that runs a Portal, and the only one started
 normally. It must be running before a shard can attach: `evennia server_start`
 needs a live Portal at the address it dials.
 
-It is also where players log in and choose a character — the accounts live
-here, and a shard holds none of its own.
+It is also where the out-of-character game is managed: logging in, choosing a
+character, and going in character from.
 """
 
 from server.conf.settings_common import *  # noqa: F401, F403
@@ -27,7 +27,7 @@ SCALING_ROLE = "router"
 # Its own name is the shared one, because it is the instance being named.
 # An assignment rather than a second "router" that would have to match.
 MULTIPLEX_INSTANCE_ID = MULTIPLEX_DEFAULT_INSTANCE  # noqa: F405
-MESSAGEBUS_INSTANCE_ID = MULTIPLEX_INSTANCE_ID
+MESSAGEBUS_INSTANCE_ID = MULTIPLEX_DEFAULT_INSTANCE
 
 TELNET_PORTS = [4000]
 WEBSERVER_PORTS = [(4001, 4005)]

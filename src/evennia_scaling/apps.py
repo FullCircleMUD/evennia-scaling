@@ -18,7 +18,7 @@ class EvenniaScalingConfig(AppConfig):
         """Check what must be configured, then install the overrides."""
         from . import config
 
-        config.get_role()
+        config.check_settings()
         self._install_session_class()
 
     def _install_session_class(self):

@@ -18,6 +18,10 @@ is clear in terms of what this library does. "No known issues" is not a clearanc
 rebuilt where it arrives, and the archive is what holds it in between. The account is archived too,
 because the arriving session has to authenticate as something.
 
+An account is found in the archive by `find_by_column("accountdb", "username", ...)`. The username is
+the only thing a player supplies at a login screen, and the column carries the schema's uniqueness — so
+nothing has to be duplicated into an Attribute to make it findable.
+
 The archive must be **shared storage**, reachable by every instance — a database all of them can see.
 This is the one thing instances do share, and the whole approach rests on it: without it the archive
 key minted on one instance names nothing on another.
@@ -31,14 +35,19 @@ key minted on one instance names nothing on another.
 **Hard dependency.** Carries the handoff message between instances that share no game database, so the
 receiving instance learns about a transfer independently of the session that is about to arrive.
 
-**An instance is named once, by the bus.** This library declares no instance id of its own. A handoff
-addresses a destination, and that name has to be one the bus can route to — two settings would
-eventually disagree, and the failure is silent.
+**An instance is named once.** This library declares no id for the instance it is running on — it reads
+the bus's. What it does declare is which *other* instances exist: `SCALING_ROUTER_ID` and
+`SCALING_SHARDS`. Those have to match the ids the bus routes by, and nothing can check that across
+instances, so the failure is a message addressed to a name nobody answers to.
 
-`[TBD — needs discussion: whether the bus message must arrive before the moved session does. Multiplex
-delivers the session over a live AMP link in milliseconds, while a bus message goes through a database
-and a polling interval, so the session can arrive at a destination that has not yet been told to expect
-it.]`
+**The session beats the bus, and it does not matter.** Multiplex delivers a session over a live AMP link
+in milliseconds; a bus message goes through a database and a polling interval. So an arriving session
+routinely gets there before the poll that would have told the destination to expect it.
+
+The arrival path drains the inbox itself — `process_inbox()` before the ticket is checked — so the
+message is read at the moment it is needed rather than at the next poll. The row is certain to be there
+by then: the sender writes it synchronously and only then asks for the move, so it is committed before
+the session leaves.
 
 ## evennia-mob-spawner
 
@@ -68,8 +77,11 @@ row and a character moves by changing a column. This library's instances share n
 The two are alternative answers to the same question, and installing both would mean two mechanisms
 disagreeing about where a character is.
 
-`[TBD — needs discussion: what this means for evennia-shards' future. This is described as an alternate
-approach to try, not as a replacement, and no decision has been made.]`
+**The current direction is that this library replaces it.** Once scaling works, shards has no job — its
+reason for existing is running one world across several processes, and this answers that without a
+shared database. The intent is to withdraw shards from PyPI and make this the preferred approach.
+
+That is the direction while this library keeps proving out, not a commitment.
 
 ## evennia-targeting
 

@@ -38,8 +38,8 @@ For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Early.** Minting, storing and sweeping tickets exist; nothing is usable yet. See
-[docs/progress.md](docs/progress.md).
+**Early.** The ticket lifecycle, the arrival path, both typeclass mixins and the boot checks exist.
+The transfer itself does not, so nothing moves anyone yet. See [docs/progress.md](docs/progress.md).
 
 `libraries/evennia-scaling-OLD/` is a reference to read, **never a source to copy from**. It answers
 this problem a different way; anything taken from it is discussed and agreed first.
@@ -83,8 +83,8 @@ this problem a different way; anything taken from it is discussed and agreed fir
 - **Sharding over a shared database.** That is `evennia-shards`, which partitions one Postgres by
   `shard_id`. This library is the alternative approach, and the two are not co-installed.
 
-`[TBD — needs discussion: what this means for evennia-shards. This is described as an alternate
-approach to try, not as a replacement, and no decision has been made about shards' future.]`
+The current direction is that this library replaces it — see
+[docs/interoperability.md](docs/interoperability.md).
 
 Everything else is decided as concrete questions arise, by applying the principles above.
 
@@ -146,21 +146,30 @@ evennia-scaling/
 ├── src/
 │   └── evennia_scaling/       # library code (src layout)
 │       ├── __init__.py
+│       ├── apps.py            # AppConfig — the boot checks and the overrides
 │       ├── config.py          # settings, each behind an accessor
+│       ├── mixins.py          # the typeclass mixins a consumer adds
 │       ├── models.py          # the ticket row, in the game database
 │       ├── migrations/
-│       ├── tickets.py         # minting, storing and sweeping tickets
+│       ├── tickets.py         # minting, storing, sweeping and redeeming
+│       ├── messages.py        # the handoff message, over the bus
+│       ├── sessions.py        # the Server session override
 │       ├── log.py             # shim onto Evennia's logger → scaling.log
 │       └── tests.py           # unit tests, run via runtests.py
 ├── tests/                     # standalone test infrastructure
 │   ├── __init__.py
 │   ├── test_settings.py
+│   ├── typeclass_stubs.py     # plain classes for startup validation
+│   ├── game_typeclasses.py    # real typeclasses, for tests that create objects
+│   ├── bad_mro_account_stub.py
+│   ├── bad_mro_character_stub.py
+│   ├── bad_import_stub.py
 │   └── urls.py
-└── examples/                  # demo harness. Only its venv and requirements so far
+└── examples/                  # router + two shards, one source tree
 ```
 
-`examples/` holds a venv and its `requirements.txt`. The gamedirs come once there is enough library
-for a settings cascade to name.
+`examples/` holds three gamedirs — `router`, `shard0`, `shard1` — with all four settings files in
+`router/server/conf/` cascading through `settings_common.py`.
 
 No `contrib/` — nothing opt-in exists, and the standards forbid scaffolding one empty.
 

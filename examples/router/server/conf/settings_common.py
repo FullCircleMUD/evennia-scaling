@@ -96,6 +96,46 @@ MULTIPLEX_DEFAULT_INSTANCE = "router"
 SCALING_ROUTER_ID = MULTIPLEX_DEFAULT_INSTANCE
 
 ######################################################################
+# Every shard in the deployment
+######################################################################
+#
+# **This must be an exact duplicate of every shard's MULTIPLEX_INSTANCE_ID,
+# spelled identically.** Nothing can check that for you: no instance can read
+# another's settings, so a name here that no instance runs under, or an
+# instance whose id is not here, is a mismatch nobody sees at startup. It
+# surfaces as a character assigned to a shard nothing answers to.
+#
+# This is the deployment as intended, not as it is running. A shard that is
+# down is still a valid place for a character to be played; it is a shard that
+# needs bringing back up. Runtime availability is multiplex's registry, and is
+# a different question.
+#
+# It has to be declared here rather than assembled from the per-instance
+# files, because each instance loads only its own — there is no point in the
+# cascade where all of them have run.
+#
+# The router is not a shard and is not listed. It is named by
+# SCALING_ROUTER_ID above.
+SCALING_SHARDS = ("shard0", "shard1")
+
+######################################################################
+# Where the world's anchor rooms are
+######################################################################
+#
+# Evennia's START_LOCATION and DEFAULT_HOME name two rooms. Across several
+# instances, naming the room is not enough — each of these says which shard
+# holds it.
+#
+# Two settings rather than one: a game may put the two rooms on different
+# shards, and nothing here lets us assume otherwise. The demo puts both on
+# shard0.
+#
+# Neither has a default. A guess would send every new character to a real
+# instance that simply is not the one intended, which fails silently.
+SCALING_START_LOCATION_SHARD = "shard0"
+SCALING_DEFAULT_HOME_SHARD = "shard0"
+
+######################################################################
 # Databases
 ######################################################################
 #

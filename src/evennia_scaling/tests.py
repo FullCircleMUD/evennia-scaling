@@ -217,10 +217,10 @@ class TestConfig(TestCase):
         """
         from django.core.exceptions import ImproperlyConfigured
 
-        from evennia_scaling.config import get_role
+        from evennia_scaling.config import check_settings
 
         with self.assertRaises(ImproperlyConfigured) as raised:
-            get_role()
+            check_settings()
         self.assertIn("SCALING_ROLE", str(raised.exception))
 
     @override_settings(SCALING_ROLE="banana")
@@ -232,18 +232,22 @@ class TestConfig(TestCase):
         """
         from django.core.exceptions import ImproperlyConfigured
 
-        from evennia_scaling.config import ROLE_ROUTER, ROLE_SHARD, get_role
+        from evennia_scaling.config import (
+            ROLE_ROUTER,
+            ROLE_SHARD,
+            check_settings,
+        )
 
         with self.assertRaises(ImproperlyConfigured) as raised:
-            get_role()
+            check_settings()
         message = str(raised.exception)
         self.assertIn(ROLE_ROUTER, message)
         self.assertIn(ROLE_SHARD, message)
 
     def test_cf_04_ready_checks_the_required_settings(self):
-        """CF-04: the accessor raising is not enough on its own.
+        """CF-04: validating at first use is not enough.
 
-        It raises when something first calls it, and on a router that may be
+        That moment depends on what the library does — on a router it may be
         the first player to connect — so a misconfigured instance boots
         cleanly and fails somewhere that says nothing about the setting.
         """
@@ -252,9 +256,758 @@ class TestConfig(TestCase):
         from django.apps import apps as django_apps
 
         config = django_apps.get_app_config("evennia_scaling")
-        with mock.patch("evennia_scaling.config.get_role") as checking:
+        with mock.patch("evennia_scaling.config.check_settings") as checking:
             config.ready()
         checking.assert_called_once()
+
+    @override_settings(SCALING_SHARDS=None)
+    def test_cf_05_an_undeclared_shard_roster_is_refused(self):
+        """CF-05: there is nothing to guess.
+
+        The roster is what a character's `current_shard` is validated
+        against, so an instance without one can validate nothing.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            check_settings()
+        self.assertIn("SCALING_SHARDS", str(raised.exception))
+
+    @override_settings(SCALING_SHARDS=())
+    def test_cf_06_an_empty_shard_roster_is_refused(self):
+        """CF-06: no character can be played anywhere.
+
+        Declared-but-empty is as unusable as undeclared, and installing this
+        library means at least a router and one shard.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        with self.assertRaises(ImproperlyConfigured):
+            check_settings()
+
+    @override_settings(SCALING_SHARDS="shard0")
+    def test_cf_07_a_bare_string_is_refused(self):
+        """CF-07: the one wrong shape that silently succeeds.
+
+        A string is iterable, so nothing raises and nothing looks wrong:
+        `"shard0" in "shard0"` is True, but so is `"s"`, and a roster of
+        letters matches no instance any deployment runs.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        with self.assertRaises(ImproperlyConfigured):
+            check_settings()
+
+    def test_cf_08_a_list_and_a_tuple_are_both_accepted(self):
+        """CF-08: the shape check refuses a string, not a sequence.
+
+        Settings files are written by hand and both spellings are natural,
+        so refusing one would be a trap rather than a check.
+        """
+        from evennia_scaling.config import check_settings
+
+        for roster in (["shard0", "shard1"], ("shard0", "shard1")):
+            with self.subTest(roster=roster):
+                with override_settings(SCALING_SHARDS=roster):
+                    check_settings()
+
+    @override_settings(SCALING_SHARDS=("shard0",))
+    def test_cf_09_an_unset_world_anchor_is_refused(self):
+        """CF-09: the library cannot guess which instance holds a room.
+
+        Both anchors, because they are separate settings a deployment can
+        forget independently — so each is checked with the other set, or one
+        missing anchor would satisfy the case for both.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import (
+            SETTING_DEFAULT_HOME_SHARD,
+            SETTING_START_LOCATION_SHARD,
+            check_settings,
+        )
+
+        for setting in (
+            SETTING_START_LOCATION_SHARD,
+            SETTING_DEFAULT_HOME_SHARD,
+        ):
+            with self.subTest(setting=setting):
+                with override_settings(**{setting: None}):
+                    with self.assertRaises(ImproperlyConfigured) as raised:
+                        check_settings()
+                    self.assertIn(setting, str(raised.exception))
+
+    @override_settings(SCALING_ROUTER_ID=None)
+    def test_cf_11_an_unset_router_id_is_refused(self):
+        """CF-11: a shard cannot work out which peer the router is.
+
+        Instances see no database and no settings but their own, so the one
+        name a shard cannot derive is the one it needs whenever it cannot
+        admit a session.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            check_settings()
+        self.assertIn("SCALING_ROUTER_ID", str(raised.exception))
+
+    @override_settings(
+        SCALING_SHARDS=("router", "shard0"),
+        SCALING_ROUTER_ID="router",
+    )
+    def test_cf_12_a_router_id_in_the_roster_is_refused(self):
+        """CF-12: the router is not a shard.
+
+        It holds accounts, not rooms a character stands in. Listing it as a
+        shard would make it a legal `current_shard`, so a character could be
+        sent to be played on the instance that is only ever a waypoint.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            check_settings()
+        self.assertIn("SCALING_ROUTER_ID", str(raised.exception))
+
+    @override_settings(SCALING_SHARDS=("shard0",))
+    def test_cf_10_a_world_anchor_outside_the_roster_is_refused(self):
+        """CF-10: a name nothing runs under answers nothing.
+
+        The typo is the case that matters: the value is a plausible shard
+        id, so nothing about it looks wrong until a character is sent there
+        and no instance is listening.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import (
+            SETTING_DEFAULT_HOME_SHARD,
+            SETTING_START_LOCATION_SHARD,
+            check_settings,
+        )
+
+        for setting in (
+            SETTING_START_LOCATION_SHARD,
+            SETTING_DEFAULT_HOME_SHARD,
+        ):
+            with self.subTest(setting=setting):
+                with override_settings(**{setting: "shrad0"}):
+                    with self.assertRaises(ImproperlyConfigured) as raised:
+                        check_settings()
+                    message = str(raised.exception)
+                    self.assertIn("shrad0", message)
+                    self.assertIn("shard0", message)
+
+
+class TestAccountMixin(TestCase):
+    """AC — the account mixin."""
+
+    #: The archive is a second database, and Django blocks a test from
+    #: touching an alias it has not declared.
+    databases = {"default", "archive"}
+
+    _next = 0
+
+    def setUp(self):
+        """Empty Evennia's identity map before each test.
+
+        Evennia's models are `SharedMemoryModel`, so a query returns a
+        cached instance keyed on (class, primary key). That cache is
+        process-global and survives Django's per-test rollback — so a
+        restore landing on a primary key an earlier test used hands back
+        the earlier test's object, with its state. Evennia's own test base
+        does the same thing.
+        """
+        from evennia.utils.idmapper.models import flush_cache
+
+        super().setUp()
+        flush_cache()
+
+    def _account(self):
+        """An account created as a consumer's would be.
+
+        Through `create_account` rather than the model, so Evennia's creation
+        hooks run — which is what this mixin hangs off.
+        """
+        from evennia.utils.create import create_account
+
+        from tests.game_typeclasses import ScalingAccount
+
+        TestAccountMixin._next += 1
+        name = f"rowan{TestAccountMixin._next}"
+        return create_account(
+            name,
+            f"{name}@example.com",
+            "testpassword123",
+            typeclass=ScalingAccount,
+        )
+
+    def test_ac_01_an_archived_account_is_found_by_username(self):
+        """AC-01: the username is the only thing a player supplies.
+
+        A real round trip rather than a mocked search, so it fails if the
+        column we name and the column the archive holds ever disagree.
+        """
+        from evennia_archive.api import archive
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+        archive(account)
+
+        self.assertEqual(
+            ScalingAccount.find_in_archive(account.username),
+            account.archive_id,
+        )
+
+    def test_ac_02_an_unarchived_username_returns_none(self):
+        """AC-02: a brand new account has nothing to come back from.
+
+        The ordinary case on a first login, not a fault.
+        """
+        from tests.game_typeclasses import ScalingAccount
+
+        self.assertIsNone(ScalingAccount.find_in_archive("nobody-at-all"))
+
+    def _archived_account(self):
+        """An account and its archived copy, with the live one deleted.
+
+        The state an instance is in when someone arrives having played
+        elsewhere: nothing local, everything in the archive.
+        """
+        from evennia_archive.api import archive
+
+        account = self._account()
+        archive(account)
+        archive_id = account.archive_id
+        username = account.username
+        account.delete()
+        return archive_id, username
+
+    def test_ac_03_an_archived_account_is_rebuilt(self):
+        """AC-03: nothing live is in the way, so this is a plain restore."""
+        from evennia.accounts.models import AccountDB
+
+        from tests.game_typeclasses import ScalingAccount
+
+        archive_id, username = self._archived_account()
+
+        rebuilt = ScalingAccount.rebuild_from_archive(archive_id)
+
+        self.assertEqual(rebuilt.archive_id, archive_id)
+        self.assertTrue(AccountDB.objects.filter(username=username).exists())
+
+    def test_ac_04_a_stale_local_copy_is_replaced(self):
+        """AC-04: `restore` is idempotent, so it would return the stale one.
+
+        The delete is the mechanism rather than tidiness — without it this
+        hands back whatever the instance was already holding.
+        """
+        from evennia_archive.api import archive
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+        account.db.progress = "as archived"
+        archive(account)
+        account.db.progress = "changed since"
+
+        rebuilt = ScalingAccount.rebuild_from_archive(account.archive_id)
+
+        self.assertEqual(rebuilt.db.progress, "as archived")
+
+    def test_ac_05_an_unarchived_identity_raises(self):
+        """AC-05: the caller asked for something that is not there.
+
+        Information rather than an empty result — the ticket path has to be
+        able to say the account it was promised is missing.
+        """
+        from evennia_archive.api import NotArchived
+
+        from tests.game_typeclasses import ScalingAccount
+
+        with self.assertRaises(NotArchived):
+            ScalingAccount.rebuild_from_archive(
+                "0d1a4d9c-0000-4000-8000-000000000000"
+            )
+
+    def test_ac_06_the_accounts_local_characters_go_with_it(self):
+        """AC-06: Evennia nulls `db_account` rather than cascading.
+
+        Left alone they survive as orphans nothing references, and a later
+        `restore` hands one of them back unchanged.
+        """
+        from evennia.objects.models import ObjectDB
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+        # create_character returns (character, errors).
+        character, errors = account.create_character(
+            key="Rowan", typeclass="tests.game_typeclasses.ScalingCharacter"
+        )
+        self.assertFalse(errors, errors)
+        character_pk = character.pk
+
+        from evennia_archive.api import archive
+
+        archive(account)
+        ScalingAccount.rebuild_from_archive(account.archive_id)
+
+        self.assertFalse(ObjectDB.objects.filter(pk=character_pk).exists())
+
+    def test_ac_07_an_archived_account_is_refreshed_by_username(self):
+        """AC-07: the login door knows a username and nothing else.
+
+        `authenticate` is handed a string a player typed, so finding the
+        identity is the work.
+        """
+        from evennia_archive.api import archive
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+        account.db.progress = "as archived"
+        archive(account)
+        account.db.progress = "changed since"
+
+        refreshed = ScalingAccount.refresh_from_archive(account.username)
+
+        self.assertEqual(refreshed.db.progress, "as archived")
+
+    def test_ac_08_an_unarchived_username_is_left_alone(self):
+        """AC-08: a brand new account has nothing to come back from.
+
+        The ordinary case on a first login. The local account has to
+        survive it, or a first-time player is deleted on the way in.
+        """
+        from evennia.accounts.models import AccountDB
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+
+        self.assertIsNone(ScalingAccount.refresh_from_archive(account.username))
+        self.assertTrue(AccountDB.objects.filter(pk=account.pk).exists())
+
+    def test_ac_09_a_superuser_is_not_refreshed(self):
+        """AC-09: rebuilding one takes an operator's way in with it.
+
+        Evennia expects #1 to be there. Archived and refreshed like any
+        other account, a superuser would be deleted and restored — and a
+        restore that renamed it on collision would lock the operator out.
+        """
+        from evennia.accounts.models import AccountDB
+        from evennia_archive.api import archive
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+        account.is_superuser = True
+        account.save()
+        archive(account)
+        pk = account.pk
+
+        self.assertIsNone(ScalingAccount.refresh_from_archive(account.username))
+        # The same row, not a rebuilt one: a restore mints a new primary key.
+        self.assertTrue(AccountDB.objects.filter(pk=pk).exists())
+
+    def test_ac_10_credentials_are_checked_against_the_archived_copy(self):
+        """AC-10: refreshing after `super()` would refuse a player's own password.
+
+        Archived under one password, changed locally since. Authenticating
+        with the archived one passes only if the refresh ran first.
+        """
+        from evennia_archive.api import archive
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+        account.set_password("archived-password")
+        account.save()
+        archive(account)
+        account.set_password("changed-since")
+        account.save()
+
+        found, errors = ScalingAccount.authenticate(
+            account.username, "archived-password"
+        )
+
+        self.assertIsNotNone(found, errors)
+
+
+    def test_ac_11_the_return_value_is_evennias(self):
+        """AC-11: the override adds a step, it does not replace the check.
+
+        A wrong password still fails, and still comes back as Evennia's
+        `(None, errors)` rather than anything of ours.
+        """
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+
+        found, errors = ScalingAccount.authenticate(
+            account.username, "not-the-password"
+        )
+
+        self.assertIsNone(found)
+        self.assertTrue(errors)
+
+    def test_ac_12_an_unarchived_account_still_authenticates(self):
+        """AC-12: the refresh's result is deliberately ignored.
+
+        A first-time player has nothing archived. Treating that as a failed
+        login would lock out everyone who has never left the router.
+        """
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+
+        found, errors = ScalingAccount.authenticate(
+            account.username, "testpassword123"
+        )
+
+        self.assertIsNotNone(found, errors)
+
+
+    def _archived_character(self, account, key):
+        """A character owned by `account`, archived, with the live copy gone.
+
+        The state the router is in when someone comes back: the roster is
+        in the archive and nothing local remains.
+        """
+        from evennia_archive.api import archive
+
+        character, errors = account.create_character(
+            key=key, typeclass="tests.game_typeclasses.ScalingCharacter"
+        )
+        self.assertFalse(errors, errors)
+        archive(character)
+        archive_id = character.archive_id
+        character.delete()
+        return archive_id
+
+    @override_settings(SCALING_ROLE="router")
+    def test_ac_13_a_router_restores_every_owned_character(self):
+        """AC-13: found by the owner stamp, which survives the archive.
+
+        `db_account` is a primary key and does not, so the stamp is the
+        only link back to an owner that comes through a round trip.
+        """
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+        self._archived_character(account, "Rowan")
+        self._archived_character(account, "Bram")
+
+        ScalingAccount.restore_characters(account)
+
+        self.assertEqual(
+            sorted(character.key for character in account.characters.all()),
+            ["Bram", "Rowan"],
+        )
+
+    @override_settings(SCALING_ROLE="router")
+    def test_ac_14_restored_characters_join_the_roster(self):
+        """AC-14: else the character-select menu is silently empty.
+
+        Restoring without adding to the roster looks like it worked and
+        leaves the player with nothing to choose from.
+        """
+        from evennia.objects.models import ObjectDB
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+        self._archived_character(account, "Rowan")
+
+        ScalingAccount.restore_characters(account)
+
+        self.assertTrue(ObjectDB.objects.filter(db_key="Rowan").exists())
+        self.assertEqual(
+            [character.key for character in account.characters.all()], ["Rowan"]
+        )
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ac_15_a_shard_restores_nothing(self):
+        """AC-15: a shard receives one character, the one its ticket names.
+
+        Restoring a whole roster here would put every character on an
+        instance it is not being played on.
+        """
+        from evennia.objects.models import ObjectDB
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+        self._archived_character(account, "Rowan")
+
+        ScalingAccount.restore_characters(account)
+
+        self.assertFalse(ObjectDB.objects.filter(db_key="Rowan").exists())
+        self.assertEqual(list(account.characters.all()), [])
+
+    @override_settings(SCALING_ROLE="router")
+    def test_ac_16_another_accounts_characters_are_left_alone(self):
+        """AC-16: the stamp's value is what makes the filter mean anything.
+
+        Match the key and ignore the value and every archived character in
+        the deployment lands on whichever account restores first.
+        """
+        from evennia.objects.models import ObjectDB
+
+        from tests.game_typeclasses import ScalingAccount
+
+        mine = self._account()
+        theirs = self._account()
+        self._archived_character(mine, "Rowan")
+        self._archived_character(theirs, "Bram")
+
+        ScalingAccount.restore_characters(mine)
+
+        self.assertEqual(
+            [character.key for character in mine.characters.all()], ["Rowan"]
+        )
+        self.assertFalse(ObjectDB.objects.filter(db_key="Bram").exists())
+
+
+class TestCurrentShard(TestCase):
+    """SH — where a character is in the game world."""
+
+    def _character(self):
+        """A character carrying the mixin, created as a consumer's would be.
+
+        Through `create_object` rather than the model, so Evennia's creation
+        hooks run — which is what mints the archive identity underneath.
+        """
+        from evennia.utils.create import create_object
+
+        from tests.game_typeclasses import ScalingCharacter
+
+        return create_object(ScalingCharacter, key="Rowan")
+
+    def test_sh_01_is_stored_as_an_attribute(self):
+        """SH-01: an Attribute survives archiving; a field would not.
+
+        The archive copies Attribute rows. A value living anywhere else on
+        the object would be dropped on the way in, and the character would
+        arrive at its destination not knowing where it is.
+        """
+        from evennia_scaling.mixins import CURRENT_SHARD_KEY
+
+        character = self._character()
+        character.current_shard = "shard1"
+        self.assertTrue(character.attributes.has(CURRENT_SHARD_KEY))
+
+    def test_sh_02_accepts_a_shard_in_the_roster(self):
+        """SH-02: and reads back exactly what was assigned."""
+        character = self._character()
+        character.current_shard = "shard1"
+        self.assertEqual(character.current_shard, "shard1")
+
+    def test_sh_03_refuses_a_shard_outside_the_roster(self):
+        """SH-03: the cause is almost always a typo.
+
+        Naming the value and the roster is what makes the line actionable —
+        the two together are the whole diagnosis.
+        """
+        character = self._character()
+        with self.assertRaises(ValueError) as raised:
+            character.current_shard = "shrad0"
+        message = str(raised.exception)
+        self.assertIn("shrad0", message)
+        self.assertIn("shard0", message)
+
+    def test_sh_04_refuses_none(self):
+        """SH-04: there is no un-set path.
+
+        A refusal that read as "None is not in ('shard0', 'shard1')" would
+        describe a typo rather than the mistake actually made, so the message
+        has to name the attribute.
+        """
+        character = self._character()
+        with self.assertRaises(ValueError) as raised:
+            character.current_shard = None
+        self.assertIn("current_shard", str(raised.exception))
+
+    def test_sh_06_carries_the_archive_mixin(self):
+        """SH-06: one mixin on the character, not two.
+
+        Asserts the relationship and nothing more. Archive tests its own
+        mixins; what its suite cannot see is this subclass.
+        """
+        from evennia_archive.mixins import ArchivableCharacterMixin
+
+        from evennia_scaling.mixins import ScalingCharacterMixin
+
+        self.assertTrue(
+            issubclass(ScalingCharacterMixin, ArchivableCharacterMixin)
+        )
+
+    @override_settings(SCALING_START_LOCATION_SHARD="shard1")
+    def test_sh_05_a_character_never_assigned_reads_as_the_start_shard(self):
+        """SH-05: so a character created any way at all is somewhere.
+
+        Nothing hooks creation. Evennia's `autocreate` writes the default on
+        the first read, which is also what puts it through `at_set`.
+        """
+        character = self._character()
+        self.assertEqual(character.current_shard, "shard1")
+
+
+_STUBS = "tests.typeclass_stubs"
+_SCALING_CHARACTER = f"{_STUBS}.ScalingCharacterStub"
+_ARCHIVABLE_CHARACTER = f"{_STUBS}.ArchivableCharacterStub"
+_LOOKALIKE = f"{_STUBS}.LookalikeStub"
+_PLAIN = f"{_STUBS}.PlainStub"
+_SCALING_ACCOUNT = f"{_STUBS}.ScalingAccountStub"
+_ARCHIVABLE_ACCOUNT = f"{_STUBS}.ArchivableAccountStub"
+_BAD_MRO = "tests.bad_mro_character_stub.BadCharacterOrder"
+_BAD_MRO_ACCOUNT = "tests.bad_mro_account_stub.BadAccountOrder"
+_BAD_IMPORT = "tests.bad_import_stub.Anything"
+
+
+class TestStartupValidation(TestCase):
+    """SV — startup validation of the consumer's typeclasses."""
+
+    def _check(self):
+        from evennia_scaling.config import check_settings
+
+        return check_settings()
+
+    @override_settings(BASE_CHARACTER_TYPECLASS=_SCALING_CHARACTER)
+    def test_sv_01_a_character_carrying_the_mixin_passes(self):
+        """SV-01: correctly configured, the check is quiet."""
+        self.assertIsNone(self._check())
+
+    @override_settings(BASE_CHARACTER_TYPECLASS=_PLAIN)
+    def test_sv_02_a_character_without_the_mixin_is_refused(self):
+        """SV-02: identity is minted at creation, so this cannot be fixed later.
+
+        The message carries the setting, the class and the mixin, because
+        those three together are the whole fix.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            self._check()
+        message = str(raised.exception)
+        self.assertIn("BASE_CHARACTER_TYPECLASS", message)
+        self.assertIn(_PLAIN, message)
+        self.assertIn("ScalingCharacterMixin", message)
+
+    @override_settings(BASE_CHARACTER_TYPECLASS=_ARCHIVABLE_CHARACTER)
+    def test_sv_03_only_the_archive_mixin_is_told_to_use_ours(self):
+        """SV-03: they followed archive's install guide and stopped.
+
+        Telling them to add a mixin when they have added one is the least
+        useful thing we could say, so the message names both.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            self._check()
+        message = str(raised.exception)
+        self.assertIn("ScalingCharacterMixin", message)
+        self.assertIn("ArchivableCharacterMixin", message)
+
+    @override_settings(BASE_CHARACTER_TYPECLASS=_LOOKALIKE)
+    def test_sv_04_a_hand_rolled_archive_id_is_refused(self):
+        """SV-04: the attribute is a loose proxy for the real question.
+
+        Identity has to be a uuid4 and unique across instances. Only the
+        mixin guarantees that, so the mixin is what is tested for.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured):
+            self._check()
+
+    @override_settings(BASE_CHARACTER_TYPECLASS=_BAD_MRO)
+    def test_sv_05_an_mro_conflict_becomes_an_ordering_message(self):
+        """SV-05: the interpreter's complaint says nothing about the fix.
+
+        We can translate it because our check is what imports the module.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            self._check()
+        message = str(raised.exception)
+        self.assertIn("ScalingCharacterMixin", message)
+        self.assertIn("BASE_CHARACTER_TYPECLASS", message)
+
+    @override_settings(BASE_ACCOUNT_TYPECLASS=_PLAIN)
+    def test_sv_07_an_account_without_the_mixin_is_refused(self):
+        """SV-07: the account side of SV-02.
+
+        An account with no archive identity cannot be moved between
+        instances, and identity is minted at creation.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            self._check()
+        message = str(raised.exception)
+        self.assertIn("BASE_ACCOUNT_TYPECLASS", message)
+        self.assertIn(_PLAIN, message)
+        self.assertIn("ScalingAccountMixin", message)
+
+    @override_settings(BASE_ACCOUNT_TYPECLASS=_ARCHIVABLE_ACCOUNT)
+    def test_sv_08_an_account_with_only_the_archive_mixin(self):
+        """SV-08: they followed archive's install guide and stopped."""
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            self._check()
+        message = str(raised.exception)
+        self.assertIn("ScalingAccountMixin", message)
+        self.assertIn("ArchivableAccountMixin", message)
+
+    @override_settings(BASE_ACCOUNT_TYPECLASS=_LOOKALIKE)
+    def test_sv_09_a_hand_rolled_account_archive_id_is_refused(self):
+        """SV-09: the mixin is what guarantees a uuid4, not the attribute."""
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured):
+            self._check()
+
+    @override_settings(BASE_ACCOUNT_TYPECLASS=_BAD_MRO_ACCOUNT)
+    def test_sv_10_an_account_mro_conflict_becomes_an_ordering_message(self):
+        """SV-10: the account side of SV-05."""
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            self._check()
+        message = str(raised.exception)
+        self.assertIn("ScalingAccountMixin", message)
+        self.assertIn("BASE_ACCOUNT_TYPECLASS", message)
+
+    @override_settings(BASE_GUEST_TYPECLASS=_PLAIN)
+    def test_sv_11_the_guest_typeclass_is_not_checked(self):
+        """SV-11: a guest carries nothing between instances.
+
+        Checking it would stop every game that offers guests from booting.
+        """
+        self.assertIsNone(self._check())
+
+    @override_settings(BASE_CHARACTER_TYPECLASS=_BAD_IMPORT)
+    def test_sv_06_an_unrelated_import_error_is_left_alone(self):
+        """SV-06: a consumer's own bug is not re-dressed as ours.
+
+        Same exception class as the MRO conflict, so the filter has to tell
+        them apart by content. Their module raises again at their own call
+        site — a failed import is not left in `sys.modules`.
+        """
+        self.assertIsNone(self._check())
 
 
 class _FakeMessage:

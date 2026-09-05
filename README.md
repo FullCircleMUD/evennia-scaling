@@ -18,9 +18,10 @@ session over.
 
 ## Status
 
-**Early.** What exists is the scaffold and the ticket half — minting one, storing it on the instance a
-session is arriving at, and sweeping the stale ones. Not usable yet. See
-[docs/progress.md](docs/progress.md).
+**Early.** What exists is the ticket half — minting one, storing it where a session is arriving, and
+redeeming it — and the typeclass mixins: an account that can be found in the archive, rebuilt from it
+and refreshed at login, and a character that knows which shard it is on. Nothing moves anyone yet: the
+transfer itself is not built. See [docs/progress.md](docs/progress.md).
 
 ## Is this for me?
 

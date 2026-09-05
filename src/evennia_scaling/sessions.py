@@ -86,9 +86,9 @@ def make_scaling_session(base):
                 # which does not exist yet.]
                 return
 
-            # Nothing admits this session. A shard holds no accounts of its
-            # own, so the router is the only place it can go; on the router
-            # we return and Evennia shows the login screen.
+            # Nothing admits this session, so it has not been in character
+            # yet — and the out-of-character game is the router's. On the
+            # router we return and Evennia shows the login screen.
             if get_role() == ROLE_SHARD:
                 send_session(self, get_router_id())
 

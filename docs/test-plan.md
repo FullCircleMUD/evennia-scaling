@@ -19,6 +19,9 @@ Behaviour is agreed here first, before any test or code — see
 | `MS` | Messages between instances |
 | `SS` | The Server session override — where an arriving session is admitted |
 | `SC` | The scaffold — the library is installed and the runner reaches it |
+| `AC` | The account mixin |
+| `SH` | Where a character is in the game world |
+| `SV` | Startup validation of the consumer's typeclasses |
 | `TK` | Tickets — what lets an arriving session be recognised |
 
 ## Fixtures
@@ -27,7 +30,19 @@ The fake objects the suite needs, named and purposed.
 
 | Fixture | Purpose |
 |---|---|
-| — | None yet |
+| `tests/typeclass_stubs.py` | Stand-in classes for startup validation — correctly configured, archive's mixin only, a hand-rolled `archive_id`, and neither. **Imports no Evennia**: `test_settings.py` points `BASE_CHARACTER_TYPECLASS` at one, and `check_settings` resolves it during `django.setup()` |
+| `tests/game_typeclasses.py` | Real account and character typeclasses, for tests that create objects. Imports Evennia, so it is imported inside a test body and never named in settings |
+| `tests/bad_mro_character_stub.py` | Both mixins with archive's first. Raises `TypeError` on import — SV-05 |
+| `tests/bad_mro_account_stub.py` | The account side of the same — SV-10 |
+| `tests/bad_import_stub.py` | Raises `TypeError` on import for an unrelated reason — SV-06 |
+
+Tests that create Evennia objects flush the identity map in `setUp`. Evennia's models are
+`SharedMemoryModel`, so a query returns a cached instance keyed on (class, primary key), and that cache
+is process-global — Django rolls the transaction back between tests and nothing rolls the cache back.
+A restore landing on a primary key an earlier test used otherwise hands back the earlier test's object.
+
+The two database aliases each need their own `TEST["NAME"]`. Two `:memory:` databases are one database,
+and every archive round trip would pass for the wrong reason.
 
 ## Cases
 
@@ -49,6 +64,14 @@ module — each of which otherwise looks like "no tests ran".
 Settings are read through an accessor in `config.py` and nowhere else, so a default lives in one place
 and a consumer overriding one changes every reader at once.
 
+**Checking and reading are separate jobs.** A setting with no safe default is validated once, at boot,
+in `check_settings()`; its accessor then only reads. A setting with a default is never checked — booting
+without it is what the default is for. See
+[library-standards.md](../../../design/library-standards.md) § Reading settings.
+
+So the cases split the same way: a refusal is a case against `check_settings`, and a default is a case
+against its accessor.
+
 **The defaults are commitments.** A consumer who sets nothing gets them, so a case pins each one — the
 value can change, but not by accident and not without the plan saying so.
 
@@ -58,18 +81,49 @@ honest answer and guessing hides the mistake until it costs more. `evennia-shard
 dormant `monolith` mode and do nothing; installing this library means at least a router and one shard,
 so there is no equivalent to fall back on.
 
-The accessor raising is not enough on its own. It raises when something first calls it, and on a router
-that may be the first player to connect — so a misconfigured instance boots cleanly and fails somewhere
-that says nothing about the setting. `AppConfig.ready()` calls the accessor so the failure happens at
+Validating at first use is not enough. That moment depends on what the library does — on a router it may
+be the first player to connect — so a misconfigured instance boots cleanly and fails somewhere that says
+nothing about the setting. `AppConfig.ready()` calls `check_settings()` so the failure happens at
 startup, naming what to add.
 
 **Two roles, and no third.** A router is where players log in and choose a character; a shard is where
 a character is played.
 
-`[TBD — needs review once the library does something with a role: nothing reads `get_role` today except
-the boot check that demands it. If the transfer ends up not branching on role at all, the setting, its
-constants and the check that refuses without it all go — a required setting nothing consults is a
-consumer obligation for nothing.]`
+`restore_characters` branches on the role, and the arrival path sends an unadmitted session back to the
+router only on a shard. So the setting earns its keep.
+
+**The shard roster has no safe default either.** `SCALING_SHARDS` names every shard in the deployment,
+and a character's `current_shard` is validated against it. There is nothing to guess: an empty roster
+means no character can be played anywhere, and installing this library means at least a router and one
+shard.
+
+It is duplicated knowledge — each entry has to equal some instance's `MULTIPLEX_INSTANCE_ID` — and
+nothing can check that, because no instance can read another's settings. So the accessor checks the
+only things visible from here: that it is declared, that it holds something, and that its shape is a
+sequence of names rather than one name. A bare string is the shape worth refusing outright, because it
+is the one that silently succeeds — `"shard0"` iterates as `"s"`, `"h"`, `"a"` and matches nothing.
+
+**`SCALING_ROUTER_ID` has no safe default.** A shard sends a session back to the router whenever it
+cannot admit one, and cannot work out which of its peers that is — instances see no database and no
+settings but their own. Guessing `"router"` is right only for a deployment that happens to use that
+word, and wrong it is silent: sessions are sent to an instance nobody runs and bus rows expire unread.
+Every other identity setting in the stack is already required.
+
+It is not the same thing as multiplex's `MULTIPLEX_DEFAULT_INSTANCE`, which is where an unbound session
+lands. Multiplex knows nothing about roles, so a deployment naming its router there has said where
+traffic goes, not which instance manages the out-of-character game.
+
+The router is also not a shard, so a value that appears in `SCALING_SHARDS` is refused.
+
+**The world anchors have no safe default either.** `SCALING_START_LOCATION_SHARD` and
+`SCALING_DEFAULT_HOME_SHARD` say which shard holds the two rooms Evennia's `START_LOCATION` and
+`DEFAULT_HOME` name. Two settings rather than one, because a game may put the two rooms on different
+shards.
+
+Both are checked the same way, and either failing refuses the boot: unset, because the library cannot
+guess which instance holds a room; or naming something outside `SCALING_SHARDS`, because a name nothing
+runs under sends characters to an instance that never answers. Neither shows up as a misconfiguration
+at the point it bites — the first character created is already in front of a player.
 
 | ID | Case | Test function |
 |---|---|---|
@@ -77,6 +131,234 @@ consumer obligation for nothing.]`
 | CF-02 | An undeclared `SCALING_ROLE` is refused, naming the setting | test_cf_02_an_undeclared_role_is_refused |
 | CF-03 | A value that is neither role is refused, listing the two that are | test_cf_03_an_unknown_role_lists_the_valid_ones |
 | CF-04 | `ready()` checks the required settings, so a misconfigured instance does not start | test_cf_04_ready_checks_the_required_settings |
+| CF-05 | An undeclared `SCALING_SHARDS` is refused, naming the setting | test_cf_05_an_undeclared_shard_roster_is_refused |
+| CF-06 | An empty shard roster is refused — no character can be played anywhere | test_cf_06_an_empty_shard_roster_is_refused |
+| CF-07 | A bare string is refused rather than iterated letter by letter | test_cf_07_a_bare_string_is_refused |
+| CF-08 | A list and a tuple are both accepted as the roster | test_cf_08_a_list_and_a_tuple_are_both_accepted |
+| CF-09 | An unset world anchor is refused, naming the setting | test_cf_09_an_unset_world_anchor_is_refused |
+| CF-10 | A world anchor naming something outside `SCALING_SHARDS` is refused, naming the roster | test_cf_10_a_world_anchor_outside_the_roster_is_refused |
+| CF-11 | An unset `SCALING_ROUTER_ID` is refused, naming the setting | test_cf_11_an_unset_router_id_is_refused |
+| CF-12 | A `SCALING_ROUTER_ID` that is also in `SCALING_SHARDS` is refused | test_cf_12_a_router_id_in_the_roster_is_refused |
+
+### AC — the account mixin
+
+`ScalingAccountMixin` carries `ArchivableAccountMixin`, so a consumer adds one mixin to their account
+class rather than two.
+
+**An account is found in the archive by its username.** It is the only thing a player supplies at a
+login screen, and it is unique — Django enforces that on the column, and the archive runs the same
+schema, so the constraint holds there too.
+
+`evennia_archive.find_by_column("accountdb", "username", identifier)` is the search.
+
+`find_in_archive(identifier)` is the seam a consumer overrides to identify an account by something other
+than its username — a wallet address, say. One argument, named for what it is rather than what we do
+with it, and the library calls it positionally, so renaming it in an override is safe.
+
+It is not `find_in_archive(column, value)`. That generic form already exists as `find_by_column`, and a
+passthrough would add nothing — the point of this method is to *be* the one place that decides which key
+identifies an account.
+
+**Rebuilding is delete-then-restore.** `restore()` is idempotent — given an identity that is already
+live it hands back the existing object rather than rebuilding it — so restoring over a stale copy does
+nothing at all. The delete is the mechanism, not tidiness.
+
+That is what makes correctness a property of arriving rather than of leaving. Whatever an instance still
+holds from a previous visit — after a crash, a boot, a dropped connection, a shutdown — is thrown away
+and rebuilt before anyone gets in, which is why none of the ways of *leaving* an instance is handled.
+
+**The account's local characters go with it.** Evennia's `AccountDB.delete` nulls `db_account` rather
+than cascading, and clears the account's attributes with the roster among them — so the characters
+would survive as orphans nothing references, and `restore()` would later hand one of those back
+unchanged.
+
+Deleting them is safe because **the archive is authoritative for a character**. It holds the latest copy
+at all times: the library archives at the end of chargen and again whenever a character leaves a shard,
+and nothing on the router changes a character's state in between. Those two are the library's to
+maintain — without them this is where a character's progress would be lost.
+
+They are found by the owner stamp rather than by `db_account` or the roster. The stamp is the link that
+survives an archive round trip, and it is what `restore_characters` searches by, so the delete and the
+restore agree by construction.
+
+`restore_characters` is a separate step, gated on the role inside itself so a caller never branches. On a
+shard it does nothing: a shard holds one character, the one its ticket names.
+
+**`refresh_from_archive` is the login door's wrapper**, and the only place a username is all that is
+known. `authenticate` is handed a string a player typed; finding the identity is the work. Every other
+way in already holds an `archive_id` and calls `rebuild_from_archive` directly — the ticket carries one.
+
+It adds one decision to that lookup: **a superuser is never rebuilt.** Evennia expects `#1` to be there,
+and replacing it with an archived copy takes an operator's way in with it. The guard runs before the
+rebuild, and its local lookup is `filter(username=identifier)`.
+
+That local lookup is a second tie to the username, and it is not a seam. A consumer who overrides
+`find_in_archive` to identify accounts some other way must override this method too, or the guard is
+handed something that is not a username, matches nothing, and stops protecting anything while still
+reading correctly. See installing.md § Identifying an account by something other than its username.
+
+**Every identifier this library passes or receives is an `archive_id`** — the uuid4 the mixin mints, and
+`ArchiveRecord`'s primary key. The archive's own row keys never leave archive.
+
+**`authenticate` is where the refresh happens, and the order is the point.** There is no seam inside
+Evennia's login flow — it looks the account up and checks the password in one call — but it is a
+classmethod on the account typeclass, so overriding it *is* the seam. Refreshing before `super()` means
+credentials are checked against the archived copy rather than whatever this instance was still holding.
+Refreshing after would refuse a player their own password because they changed it somewhere else.
+
+The refresh's result is ignored. An account with nothing archived is a first-time player, and the login
+has to proceed exactly as Evennia would.
+
+No role gate. A shard is never reached through this door: an unticketed session is sent to the router
+before a login screen renders.
+
+**`restore_characters` rebuilds the roster, and only on the router.** The character-select menu reads
+live objects, so an account restored without its characters logs in to an empty menu — which looks like
+it worked.
+
+They are found by the owner stamp `evennia-archive` writes at character creation. `db_account` is a
+primary key and does not survive the archive, so the stamp is the only link back to an owner that does.
+
+**Gated on the role inside the method**, so a caller never branches — and so a login straight to a shard
+cannot reach it either. A shard receives exactly one character, the one its ticket names; restoring a
+whole roster there would put every character on an instance it is not being played on.
+
+Adding to the roster is `account.characters.add(...)` rather than writing the attribute, because that
+also fires `at_post_add_character`.
+
+| ID | Case | Test function |
+|---|---|---|
+| AC-01 | An archived account is found by its username | test_ac_01_an_archived_account_is_found_by_username |
+| AC-02 | A username with nothing archived returns `None` | test_ac_02_an_unarchived_username_returns_none |
+| AC-03 | An archived account with no live copy is rebuilt and returned | test_ac_03_an_archived_account_is_rebuilt |
+| AC-04 | A stale live copy is replaced rather than returned | test_ac_04_a_stale_local_copy_is_replaced |
+| AC-05 | An archive id that is nothing in the archive raises | test_ac_05_an_unarchived_identity_raises |
+| AC-06 | Rebuilding an account deletes its local characters, so nothing stale survives it | test_ac_06_the_accounts_local_characters_go_with_it |
+| AC-07 | An archived account is rebuilt from its username | test_ac_07_an_archived_account_is_refreshed_by_username |
+| AC-08 | A username with nothing archived is left alone | test_ac_08_an_unarchived_username_is_left_alone |
+| AC-09 | A superuser is not rebuilt, even with an archived copy | test_ac_09_a_superuser_is_not_refreshed |
+| AC-10 | Credentials are checked against the archived copy, not a stale local one | test_ac_10_credentials_are_checked_against_the_archived_copy |
+| AC-11 | The return value is Evennia's, unchanged | test_ac_11_the_return_value_is_evennias |
+| AC-12 | An account with nothing archived still authenticates | test_ac_12_an_unarchived_account_still_authenticates |
+| AC-13 | On the router, every character carrying this account's owner stamp is restored | test_ac_13_a_router_restores_every_owned_character |
+| AC-14 | Restored characters are on the account's roster | test_ac_14_restored_characters_join_the_roster |
+| AC-15 | On a shard, nothing is restored | test_ac_15_a_shard_restores_nothing |
+| AC-16 | Characters owned by a different account are not restored | test_ac_16_another_accounts_characters_are_left_alone |
+
+### SH — where a character is in the game world
+
+`current_shard` is the character's current location in the in-character world, at shard granularity. A
+character that moves from `shard0` to `shard1` has its `current_shard` change with it. It is not a home
+shard and not a permanent assignment.
+
+**The router is not part of the game world.** It is where the out-of-character game is conducted, so a
+character is never in it — the character object can be instantiated there while the player is out of
+character, but it is not standing anywhere in the world. `current_shard` keeps naming the shard the
+character is in, which is what going in character reads to know where to send them.
+
+An `AttributeProperty`, so the value is an Attribute and survives the archive round trip — a field
+would not. Validation lives in `at_set`, which is the descriptor's write hook.
+
+**One rule: the value must be in `SCALING_SHARDS`.** That is also what keeps the router out, since
+`CF-12` refuses a `SCALING_ROUTER_ID` that appears in the roster — so there is no separate router
+check and no second place for the two to disagree. It is not a guarantee that the named instance is
+running: the roster is the deployment as intended, and a shard that is down is still a real part of the
+world.
+
+**`None` is refused like any other value.** There is no un-set path: a character that has never been
+assigned a shard reads as `SCALING_START_LOCATION_SHARD`, and Evennia's `autocreate` writes that
+default back on the first read, so assigning `None` would be reverted by the next read anyway.
+
+The refusal is a `ValueError`, not `ImproperlyConfigured`. The settings are fine; a caller passed a
+value that is not a shard, at runtime.
+
+**`at_set` returns what gets stored, and ours returns it unchanged.** No trimming and no case folding —
+tidying `"Shard0 "` into `"shard0"` would hide the typo rather than report it.
+
+**`.db` bypasses all of this.** Evennia's own documentation says so: `character.db.current_shard = "x"`
+writes through the AttributeHandler and the descriptor never runs. Nothing can close that door from
+here.
+
+**The mixin carries `ArchivableCharacterMixin`**, so a consumer adds one mixin to their character class
+rather than two.
+
+`SH-06` asserts that relationship and nothing more. **These cases cover what this library's classes
+could break, not what its dependencies do** — `evennia-archive` tests its own mixins, and duplicating
+that here would be testing someone else's code through ours.
+
+The case to add, when it applies: **wherever this mixin overrides a method it inherits from an archive
+mixin, a case pins that the override has not lost the behaviour the archive version provided.** That is
+the change an inherited-behaviour test can catch and the archive's own suite cannot, because its suite
+knows nothing about this subclass. No override exists today.
+
+| ID | Case | Test function |
+|---|---|---|
+| SH-01 | The value is stored as an Attribute, so it survives the archive round trip | test_sh_01_is_stored_as_an_attribute |
+| SH-02 | A shard in `SCALING_SHARDS` is accepted and reads back unchanged | test_sh_02_accepts_a_shard_in_the_roster |
+| SH-03 | A value not in `SCALING_SHARDS` is refused, naming the value and the roster | test_sh_03_refuses_a_shard_outside_the_roster |
+| SH-04 | `None` is refused, saying what it means rather than reading as a typo | test_sh_04_refuses_none |
+| SH-05 | A character never assigned a shard reads as `SCALING_START_LOCATION_SHARD` | test_sh_05_a_character_never_assigned_reads_as_the_start_shard |
+| SH-06 | `ScalingCharacterMixin` extends `ArchivableCharacterMixin`, so one mixin on the character satisfies both | test_sh_06_carries_the_archive_mixin |
+
+### SV — startup validation of the consumer's typeclasses
+
+Nothing can transfer without a stable identity, and identity is minted at creation — so a character
+typeclass missing the mixin produces characters that can never be archived, and the mistake cannot be
+corrected after the fact. It surfaces at transfer time, in front of a player, on a path that has
+already archived them somewhere else. The library refuses to start instead.
+
+The check reads Evennia's `BASE_CHARACTER_TYPECLASS` and asks whether it carries
+`ScalingCharacterMixin`. It tests for **the mixin, not for an `archive_id` attribute**. `evennia-archive`
+takes identity minted any way, but this library needs a uuid4 that is unique across instances, and a
+hand-rolled value satisfies the attribute while guaranteeing neither.
+
+It joins the other clauses in `check_settings()`, so a deployment with a bad typeclass *and* a missing
+setting is told both at once.
+
+Two limits, both deliberate:
+
+- **It stops every management command, `migrate` among them**, because `check_settings()` runs in
+  `AppConfig.ready()` during `django.setup()`. There is no install-now-configure-later path when the
+  misconfiguration otherwise surfaces as nothing happening.
+- **It checks the configured default only.** A game creating characters of some other typeclass gets no
+  warning. This is a boot-time smoke test, not a guarantee, and the message should not imply otherwise.
+
+`SV-03` exists because that consumer did something reasonable: they followed `evennia-archive`'s install
+guide and stopped. Telling them to add a mixin when they have added one is the least useful thing we
+could say, so the message names ours as the replacement for theirs.
+
+`SV-05` and `SV-06` are one `try` and a decision about when to speak. Listing both mixins with archive's
+first cannot work — Python refuses a base that precedes its own subclass — and the interpreter's MRO
+complaint says nothing about what to do. We can translate it, because our check is what imports the
+module. But the same `except` sees every `TypeError` a consumer's module raises at import, so it
+translates only when the message carries both the MRO phrase and our mixin's name.
+
+**Anything else is let go rather than re-raised.** A traceback that reaches this library should mean
+this library is the problem. A module that fails to import is not left in `sys.modules`, so the
+consumer's next import re-executes and raises again at their own call site with their own traceback.
+The trade, accepted knowingly: a character class we cannot import is one we cannot check, so a genuinely
+unarchivable character behind an unrelated import error reaches first login rather than startup. That
+needs their module to be broken *and* missing the mixin, and the broken module is the louder problem.
+
+**Both configured typeclasses are checked**, through one function called twice, so the account's
+messages and the character's cannot drift apart.
+
+`BASE_GUEST_TYPECLASS` is deliberately not checked. A guest account carries nothing worth moving between
+instances, and checking it would stop every game that offers guests from booting.
+
+| ID | Case | Test function |
+|---|---|---|
+| SV-01 | A character typeclass carrying the mixin passes | test_sv_01_a_character_carrying_the_mixin_passes |
+| SV-02 | One without it is refused, naming the setting, the class and the mixin to add | test_sv_02_a_character_without_the_mixin_is_refused |
+| SV-03 | One carrying `ArchivableCharacterMixin` but not ours is refused, naming ours as the replacement | test_sv_03_only_the_archive_mixin_is_told_to_use_ours |
+| SV-04 | One exposing an `archive_id` attribute without the mixin is refused | test_sv_04_a_hand_rolled_archive_id_is_refused |
+| SV-05 | An MRO conflict naming our mixin is translated into an ordering message | test_sv_05_an_mro_conflict_becomes_an_ordering_message |
+| SV-06 | An import failing any other way is left alone, not re-dressed as ours | test_sv_06_an_unrelated_import_error_is_left_alone |
+| SV-07 | An account typeclass without the mixin is refused, naming the setting, the class and the mixin to add | test_sv_07_an_account_without_the_mixin_is_refused |
+| SV-08 | One carrying `ArchivableAccountMixin` but not ours is refused, naming ours as the replacement | test_sv_08_an_account_with_only_the_archive_mixin |
+| SV-09 | One exposing an `archive_id` attribute without the mixin is refused | test_sv_09_a_hand_rolled_account_archive_id_is_refused |
+| SV-10 | An MRO conflict naming our account mixin is translated into an ordering message | test_sv_10_an_account_mro_conflict_becomes_an_ordering_message |
+| SV-11 | `BASE_GUEST_TYPECLASS` is not checked | test_sv_11_the_guest_typeclass_is_not_checked |
 
 ### MS — messages between instances
 
@@ -132,9 +414,9 @@ database round trip.
 **A session already authenticated is left alone.** It did not arrive by transfer, and admitting it
 again would fire the login hooks twice.
 
-**A shard that cannot admit a session sends it to the router.** A shard holds no accounts of its own,
-so there is nowhere else for it to go. On the router there is nothing to do: Evennia shows the login
-screen.
+**A shard that cannot admit a session sends it to the router.** A shard is where a character is played;
+a session nothing has admitted has not been in character yet, and the out-of-character game is the
+router's. On the router there is nothing to do: Evennia shows the login screen.
 
 | ID | Case | Test function |
 |---|---|---|
@@ -149,8 +431,9 @@ screen.
 | SS-09 | A shard sends a session it cannot admit to the router | test_ss_09_a_shard_sends_an_unadmitted_session_to_the_router |
 | SS-10 | A router leaves a session it cannot admit alone | test_ss_10_a_router_leaves_an_unadmitted_session_alone |
 
-`[TBD — needs building: what happens on a redeemed ticket. The session is admitted and the account and
-character rebuilt from the archive, which is `handoff.py`, which does not exist yet.]`
+**Not built yet:** what happens once a ticket is redeemed — admitting the session and rebuilding the
+account and character from the archive. The mixins that rebuild them exist; what calls them on arrival
+does not. Cases arrive with it.
 
 ### TK — tickets
 

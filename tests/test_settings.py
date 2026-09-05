@@ -26,20 +26,60 @@ LOG_DIR = os.path.join(tempfile.gettempdir(), "evennia_scaling_test_logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # Library under test
-INSTALLED_APPS = list(INSTALLED_APPS) + ["evennia_scaling"]  # noqa: F405
+INSTALLED_APPS = list(INSTALLED_APPS) + [  # noqa: F405
+    "evennia_archive",
+    "evennia_scaling",
+]
 
 # One database. The library owns no tables yet; when it does, this grows a
 # second alias and a router, as the siblings have.
+# Each alias needs its own TEST name. Two ``:memory:`` databases are the
+# same database, so without these the archive is the live database under
+# another name and every round trip passes for the wrong reason.
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": ":memory:",
+        "TEST": {"NAME": "file:evennia_scaling_test_default?mode=memory&cache=shared"},
+    },
+    # The archive. A second database with the same schema, holding accounts
+    # and characters between instances — the library looks accounts up in it
+    # and rebuilds them from it, so the suite needs a real one.
+    "archive": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": ":memory:",
+        "TEST": {"NAME": "file:evennia_scaling_test_archive?mode=memory&cache=shared"},
     },
 }
+
+DATABASE_ROUTERS = ["evennia_archive.db_router.ArchiveRouter"]
+
+# `list(...)` rather than `+=`: Evennia declares this as a tuple.
+#
+# Archive's mixin writes `owns_character()` into a character's puppet, edit
+# and delete locks. Without this the clause cannot resolve, and creating a
+# character raises.
+LOCK_FUNC_MODULES = list(LOCK_FUNC_MODULES) + [  # noqa: F405
+    "evennia_archive.lockfuncs",
+]
 
 # This instance's role. Required — the library refuses to boot without it, so
 # the suite has to declare one as any configured instance would.
 SCALING_ROLE = "router"
+
+# The rest of what the library refuses to boot without. Declared here for the
+# same reason as the role: the suite is a configured instance, and a test that
+# cares about one of these overrides it.
+SCALING_ROUTER_ID = "router"
+
+# The typeclasses the library validates at boot. Stubs carrying the mixins,
+# as any configured game's would be — check_settings resolves these during
+# django.setup(), so they must not import Evennia.
+BASE_ACCOUNT_TYPECLASS = "tests.typeclass_stubs.ScalingAccountStub"
+BASE_CHARACTER_TYPECLASS = "tests.typeclass_stubs.ScalingCharacterStub"
+SCALING_SHARDS = ("shard0", "shard1")
+SCALING_START_LOCATION_SHARD = "shard0"
+SCALING_DEFAULT_HOME_SHARD = "shard0"
 
 # Required Django bits
 SECRET_KEY = "test-only-secret"

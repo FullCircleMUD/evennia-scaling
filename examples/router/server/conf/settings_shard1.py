@@ -17,8 +17,8 @@ Cascade:
         -> settings_common.py
             -> settings.py
 
-A shard is where a character is played. It holds no accounts of its own — a
-session it cannot admit goes back to the router.
+A shard is where a character is played. The out-of-character game belongs to
+the router, so a session this instance cannot admit goes back there.
 """
 
 from server.conf.settings_common import *  # noqa: F401, F403

@@ -26,22 +26,62 @@ def get_ticket_lifetime() -> int:
 
 SETTING_ROUTER_ID = "SCALING_ROUTER_ID"
 
-#: Which instance holds the accounts. A shard sends a session back to the
-#: router whenever it cannot admit it, and cannot work out which of its peers
-#: that is: instances share no database and no settings, so nothing a shard
-#: can read names one. It has to be told.
-#:
-#: Unlike `SCALING_ROLE` this has a default. `router` is a sensible guess, and
-#: a deployment that named its router something else is a deployment that will
-#: say so.
-DEFAULT_ROUTER_ID = "router"
-
-
 def get_router_id():
-    """Return ``SCALING_ROUTER_ID``, defaulting to ``router``."""
+    """Which instance manages the out-of-character game. Checked at boot.
+
+    Where a player logs in, chooses a character and goes in character from —
+    and the instance that runs the Portal. A shard sends a session back here
+    whenever it cannot admit it, and cannot work out which of its peers that
+    is: instances share no database and no settings, so nothing a shard can
+    read names one.
+
+    Not the same thing as multiplex's ``MULTIPLEX_DEFAULT_INSTANCE``, which
+    is where an unbound session lands. That library knows nothing about
+    roles; naming an instance there says where traffic goes, not which
+    instance manages the out-of-character game.
+    """
     from django.conf import settings
 
-    return getattr(settings, SETTING_ROUTER_ID, DEFAULT_ROUTER_ID)
+    return getattr(settings, SETTING_ROUTER_ID)
+
+
+SETTING_SHARDS = "SCALING_SHARDS"
+
+
+def get_shards():
+    """Return every shard in the deployment. Checked at boot.
+
+    **The roster is the deployment as intended, not as it is running.** A
+    shard that is down is still a valid place for a character to be played.
+    Which instances are attached right now is multiplex's registry, and is a
+    different question.
+    """
+    from django.conf import settings
+
+    return getattr(settings, SETTING_SHARDS)
+
+
+SETTING_START_LOCATION_SHARD = "SCALING_START_LOCATION_SHARD"
+SETTING_DEFAULT_HOME_SHARD = "SCALING_DEFAULT_HOME_SHARD"
+
+
+def get_start_location_shard():
+    """Return the shard a new character begins on. Checked at boot.
+
+    Read whenever a character is created — it is what ``current_shard``
+    defaults to, and `AttributeProperty` takes the function rather than a
+    value so the read happens then rather than when `mixins` imports.
+    """
+    from django.conf import settings
+
+    return getattr(settings, SETTING_START_LOCATION_SHARD)
+
+
+def get_default_home_shard():
+    """Return the shard the default home room is on. Checked at boot."""
+    from django.conf import settings
+
+    return getattr(settings, SETTING_DEFAULT_HOME_SHARD)
 
 
 SETTING_ROLE = "SCALING_ROLE"
@@ -57,32 +97,194 @@ ROLES = (ROLE_ROUTER, ROLE_SHARD)
 
 
 def get_role():
-    """Return this instance's role, refusing anything that is not one.
+    """Return this instance's role. Checked at boot."""
+    from django.conf import settings
 
-    Deliberately has no default. An accessor normally supplies one so a
-    consumer who declared nothing still works, but there is no harmless
-    default available here — with no monolith mode, an instance that does not
-    know whether it is a router or a shard cannot do anything correct. So an
-    undeclared role is a refusal rather than a guess, which is the position
-    `evennia-message-bus` takes on its instance id for the same reason.
+    return getattr(settings, SETTING_ROLE)
 
-    `AppConfig.ready()` calls this, so the refusal happens at boot rather than
-    wherever something first needs the role.
+
+SETTING_ACCOUNT_TYPECLASS = "BASE_ACCOUNT_TYPECLASS"
+SETTING_CHARACTER_TYPECLASS = "BASE_CHARACTER_TYPECLASS"
+
+
+def _check_typeclass(setting, ours, theirs, problems):
+    """Refuse a typeclass that cannot carry an archive identity.
+
+    Called once per configured typeclass, so the account's messages and the
+    character's cannot drift apart.
+
+    Identity is minted at creation and never reissued, so an object made
+    without the mixin can never be archived — and that cannot be corrected
+    afterwards. Left alone it surfaces at transfer time, in front of a
+    player, on a path that has already archived them somewhere else.
+
+    Tests for the mixin, not for an ``archive_id`` attribute. The archive
+    takes identity minted any way; this library needs a uuid4 unique across
+    instances, and a hand-rolled value satisfies the attribute while
+    guaranteeing neither.
+
+    Checks the configured defaults only. A game creating objects of some
+    other typeclass gets no warning — a boot-time smoke test, not a
+    guarantee. ``BASE_GUEST_TYPECLASS`` is deliberately absent: a guest
+    account carries nothing worth moving between instances.
+    """
+    from django.conf import settings
+    from evennia.utils.utils import class_from_module
+
+    path = getattr(settings, setting, None)
+    if not path:
+        return
+
+    try:
+        typeclass = class_from_module(path)
+    except TypeError as err:
+        # Listing both mixins with archive's first cannot work — Python
+        # refuses a base that precedes its own subclass — and the
+        # interpreter's complaint says nothing about what to do. We can
+        # translate it because this is what imports the module.
+        #
+        # Whitespace-normalised: CPython line-wraps the message, so the
+        # phrase arrives as "method resolution\norder (MRO)".
+        text = " ".join(str(err).split())
+        if "method resolution order" in text and ours.__name__ in text:
+            problems.append(
+                f"{setting} is {path!r}, which lists {theirs.__name__} "
+                f"before {ours.__name__}. Ours already carries archive's, "
+                f"so list ours alone."
+            )
+        # Anything else is the consumer's own bug, and is let go rather than
+        # re-raised: a traceback reaching this library should mean this
+        # library is the problem. A module that failed to import is not left
+        # in sys.modules, so their next import raises again at their own
+        # call site with their own traceback.
+        return
+
+    if issubclass(typeclass, ours):
+        return
+
+    if issubclass(typeclass, theirs):
+        # They followed evennia-archive's install guide and stopped. Telling
+        # them to add a mixin when they have added one says nothing.
+        problems.append(
+            f"{setting} is {path!r}, which carries {theirs.__name__} but "
+            f"not {ours.__name__}. Ours carries archive's, so replace it "
+            f"rather than adding to it."
+        )
+        return
+
+    problems.append(
+        f"{setting} is {path!r}, which does not carry {ours.__name__}. An "
+        f"object created without it has no archive identity, and identity "
+        f"is minted at creation — so it cannot be given one later."
+    )
+
+
+def _check_typeclasses(problems):
+    """Check both configured typeclasses against their mixins."""
+    from evennia_archive.mixins import (
+        ArchivableAccountMixin,
+        ArchivableCharacterMixin,
+    )
+
+    # Imported here rather than at module scope: `mixins` reads this module,
+    # so importing it at the top is a cycle.
+    from .mixins import ScalingAccountMixin, ScalingCharacterMixin
+
+    _check_typeclass(
+        SETTING_ACCOUNT_TYPECLASS,
+        ScalingAccountMixin,
+        ArchivableAccountMixin,
+        problems,
+    )
+    _check_typeclass(
+        SETTING_CHARACTER_TYPECLASS,
+        ScalingCharacterMixin,
+        ArchivableCharacterMixin,
+        problems,
+    )
+
+
+def check_settings():
+    """Refuse to start unless every required setting is set and usable.
+
+    Called once, from `AppConfig.ready()`. The settings below have no safe
+    default — there is no value the library could pick that is correct — so
+    an instance missing one does not start.
+
+    Validating at first use instead would fire whenever that is: on a router
+    it may be the first player to connect, so a misconfigured instance boots
+    cleanly and fails somewhere that says nothing about the setting.
+
+    Everything is checked before anything raises, so a deployment missing
+    three settings hears about three rather than one per restart.
+
+    See design/library-standards.md § Reading settings.
     """
     from django.conf import settings
     from django.core.exceptions import ImproperlyConfigured
 
+    problems = []
+
     role = getattr(settings, SETTING_ROLE, None)
-    if role is None:
-        raise ImproperlyConfigured(
-            f"{SETTING_ROLE} is not set. Every instance running "
+    if role not in ROLES:
+        problems.append(
+            f"{SETTING_ROLE} is {role!r}. Every instance running "
             f"evennia-scaling is either {ROLE_ROUTER!r} or {ROLE_SHARD!r}, "
             f"and there is no default — an instance that does not know which "
             f"it is cannot route a session or hold a character correctly."
         )
-    if role not in ROLES:
-        raise ImproperlyConfigured(
-            f"{SETTING_ROLE} is {role!r}, which is not a role. Valid values "
-            f"are {ROLE_ROUTER!r} and {ROLE_SHARD!r}."
+
+    # A string passes every other test — it is iterable, it has a length,
+    # and membership against it silently succeeds one letter at a time.
+    shards = getattr(settings, SETTING_SHARDS, None)
+    if not shards or isinstance(shards, str):
+        problems.append(
+            f"{SETTING_SHARDS} is {shards!r}. It lists every shard in the "
+            f"deployment, spelled exactly as each one's "
+            f"MULTIPLEX_INSTANCE_ID, and a bare string is read one letter at "
+            f"a time and matches nothing. Write a list or a tuple."
         )
-    return role
+        shards = ()
+
+    # Guessing "router" is right only for a deployment that happens to use
+    # that word, and wrong it is silent: sessions go to an instance nobody
+    # runs and bus rows expire unread.
+    router = getattr(settings, SETTING_ROUTER_ID, None)
+    if not router:
+        problems.append(
+            f"{SETTING_ROUTER_ID} is not set. It names the instance that "
+            f"manages the out-of-character game, and a shard cannot work one "
+            f"out — instances see no database and no settings but their own."
+        )
+    elif router in shards:
+        problems.append(
+            f"{SETTING_ROUTER_ID} is {router!r}, which is also in "
+            f"{SETTING_SHARDS}. The router manages the out-of-character "
+            f"game; a character is played on a shard, so it is not one."
+        )
+
+    # Evennia's START_LOCATION and DEFAULT_HOME name two rooms; across
+    # several instances each is on one shard, and these say which. Two
+    # settings, because a game may put the two rooms on different shards.
+    for setting in (SETTING_START_LOCATION_SHARD, SETTING_DEFAULT_HOME_SHARD):
+        anchor = getattr(settings, setting, None)
+        if not anchor:
+            problems.append(
+                f"{setting} is not set. It names the shard that room is on, "
+                f"and has no default — this library cannot guess which of "
+                f"your instances holds it."
+            )
+        elif anchor not in shards:
+            problems.append(
+                f"{setting} is {anchor!r}, which is not in {SETTING_SHARDS} "
+                f"({tuple(shards)!r}). A room on an instance no deployment "
+                f"runs is a room no character can reach."
+            )
+
+    # Not a setting of ours, but the same question: is this instance
+    # configured to work at all? Collected with the rest so a deployment
+    # missing a setting and a mixin is told both at once.
+    _check_typeclasses(problems)
+
+    if problems:
+        raise ImproperlyConfigured(" ".join(problems))
