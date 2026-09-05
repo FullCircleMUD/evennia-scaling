@@ -17,6 +17,7 @@ Behaviour is agreed here first, before any test or code — see
 |---|---|
 | `CF` | Settings, each behind an accessor |
 | `MS` | Messages between instances |
+| `SS` | The Server session override — where an arriving session is admitted |
 | `SC` | The scaffold — the library is installed and the runner reaches it |
 | `TK` | Tickets — what lets an arriving session be recognised |
 
@@ -104,6 +105,53 @@ to be imported somewhere that runs on every instance.
 | MS-04 | A handled message is consumed rather than left to be retried | test_ms_04_a_handled_message_is_consumed |
 | MS-05 | The class registers itself on import, so a peer's message finds a handler | test_ms_05_registers_itself_on_import |
 
+### SS — the Server session override
+
+`load_sync_data` is where a session's synced data arrives on the Server, and it is where an arriving
+session gets admitted or sent away. Installed by reading whatever `SERVER_SESSION_CLASS` the consumer
+configured, subclassing it and repointing the setting — ours is the leaf, so our method runs and
+`super()` runs theirs underneath.
+
+**The ticket rides in multiplex's payload.** A moved session carries whatever the mover put in
+`session.server_data[PAYLOAD_KEY]`, as JSON. This library puts the token there under
+`SCALING_TICKET_KEY` and reads it back here. Multiplex neither reads it nor has an opinion about it.
+
+**Only the token travels.** The ticket itself is already in this instance's table, put there by the bus
+message. Sending the fields as well would be a second copy able to disagree with the first.
+
+**A malformed payload is not an error.** `json.loads` raises on a corrupt string, and this runs on
+every session that arrives carrying one — so a payload that cannot be read yields no token, exactly as
+an absent one does, and the session is treated as untickered.
+
+**The bus is drained before redeeming.** The sender commits the handoff row and only then asks for the
+move, so the row is there — but the bus polls on an interval and the session arrives over a live AMP
+link in milliseconds. Draining here reads a row already sitting there rather than waiting for a poll
+the session is faster than. Only when a token arrived: an ordinary connection should not pay for a
+database round trip.
+
+**A session already authenticated is left alone.** It did not arrive by transfer, and admitting it
+again would fire the login hooks twice.
+
+**A shard that cannot admit a session sends it to the router.** A shard holds no accounts of its own,
+so there is nowhere else for it to go. On the router there is nothing to do: Evennia shows the login
+screen.
+
+| ID | Case | Test function |
+|---|---|---|
+| SS-01 | The generated class subclasses whatever session class the consumer had configured | test_ss_01_subclasses_the_consumers_session_class |
+| SS-02 | `ready()` stashes the consumer's class and repoints `SERVER_SESSION_CLASS` at ours | test_ss_02_ready_stashes_and_repoints_the_setting |
+| SS-03 | `load_sync_data` calls the base, so Evennia's own sync and a consumer's override still run | test_ss_03_load_sync_data_calls_the_base |
+| SS-04 | A session already carrying `logged_in` and `uid` is left alone | test_ss_04_an_authenticated_session_is_left_alone |
+| SS-05 | The token is read from multiplex's payload | test_ss_05_reads_the_token_from_the_payload |
+| SS-06 | A payload that is absent, unparseable, or carries no token yields none | test_ss_06_an_unreadable_payload_yields_no_token |
+| SS-07 | A session carrying a token drains the bus before redeeming | test_ss_07_a_ticketed_session_drains_the_bus_first |
+| SS-08 | A session carrying no token does not drain the bus | test_ss_08_an_unticketed_session_does_not_drain_the_bus |
+| SS-09 | A shard sends a session it cannot admit to the router | test_ss_09_a_shard_sends_an_unadmitted_session_to_the_router |
+| SS-10 | A router leaves a session it cannot admit alone | test_ss_10_a_router_leaves_an_unadmitted_session_alone |
+
+`[TBD — needs building: what happens on a redeemed ticket. The session is admitted and the account and
+character rebuilt from the archive, which is `handoff.py`, which does not exist yet.]`
+
 ### TK — tickets
 
 A ticket is what lets a session arriving at an instance be recognised as the one a handoff announced.
@@ -179,3 +227,35 @@ means a sweep can never race it.
 | TK-07 | The expiry is stamped from this instance's clock, not carried in the payload | test_tk_07_stamps_an_expiry_from_the_local_clock |
 | TK-08 | Storing sweeps expired rows, so cleanup needs no scheduler | test_tk_08_storing_sweeps_expired_tickets |
 | TK-09 | The sweep spares tickets that are still live, including the one just written | test_tk_09_the_sweep_spares_live_tickets |
+
+#### Redeeming, on arrival
+
+`redeem_ticket(token)` is the whole of the redemption side: one function rather than a lookup and a
+delete, so no caller can forget to consume a ticket.
+
+Not named `is_authorized` — it is not a question you may ask twice. Success deletes.
+
+It returns the ticket's fields rather than a bool, because those are how the caller learns whose
+account and character to rebuild.
+
+**Consumed by character, not by token.** A character can only be in one place, so honouring one ticket
+invalidates any sibling — otherwise a retried handoff leaves a second ticket able to pull that
+character somewhere it has already left.
+
+**The sweep runs before the lookup**, so what remains is live by construction and the query carries no
+expiry predicate.
+
+**Each refusal is logged with the check that failed.** From outside they are one `None`, and this is the
+only place that knows which it was. An absent token is not a refusal and logs nothing — it is an
+ordinary connection, and logging it would bury the real refusals.
+
+| ID | Case | Test function |
+|---|---|---|
+| TK-10 | A live ticket addressed to this instance is redeemed, and returns its fields | test_tk_10_redeems_a_live_ticket_for_this_instance |
+| TK-11 | An unknown token is refused | test_tk_11_refuses_an_unknown_token |
+| TK-12 | A ticket addressed to another instance is refused, and left intact | test_tk_12_refuses_a_ticket_for_another_instance |
+| TK-13 | An expired ticket is refused | test_tk_13_refuses_an_expired_ticket |
+| TK-14 | Success consumes the ticket — a second redemption of the same token is refused | test_tk_14_a_redeemed_ticket_cannot_be_redeemed_again |
+| TK-15 | Success also consumes any other ticket for the same character | test_tk_15_redeeming_consumes_siblings_for_the_same_character |
+| TK-16 | Each refusal is logged with the check that failed | test_tk_16_a_refusal_is_logged_with_the_failed_check |
+| TK-17 | No token returns `None` and logs nothing | test_tk_17_no_token_is_silent |

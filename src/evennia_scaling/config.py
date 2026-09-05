@@ -24,6 +24,26 @@ def get_ticket_lifetime() -> int:
     )
 
 
+SETTING_ROUTER_ID = "SCALING_ROUTER_ID"
+
+#: Which instance holds the accounts. A shard sends a session back to the
+#: router whenever it cannot admit it, and cannot work out which of its peers
+#: that is: instances share no database and no settings, so nothing a shard
+#: can read names one. It has to be told.
+#:
+#: Unlike `SCALING_ROLE` this has a default. `router` is a sensible guess, and
+#: a deployment that named its router something else is a deployment that will
+#: say so.
+DEFAULT_ROUTER_ID = "router"
+
+
+def get_router_id():
+    """Return ``SCALING_ROUTER_ID``, defaulting to ``router``."""
+    from django.conf import settings
+
+    return getattr(settings, SETTING_ROUTER_ID, DEFAULT_ROUTER_ID)
+
+
 SETTING_ROLE = "SCALING_ROLE"
 
 #: A router is where players log in and choose a character; a shard is where a

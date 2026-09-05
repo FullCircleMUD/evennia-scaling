@@ -22,6 +22,8 @@ See docs/test-plan.md § TK.
 import uuid
 from datetime import timedelta
 
+from .log import scaling_log
+
 
 def create_ticket(account_archive_id, character_archive_id, to_instance):
     """Mint a ticket for a handoff to ``to_instance``.
@@ -59,9 +61,13 @@ def create_ticket(account_archive_id, character_archive_id, to_instance):
 def purge_expired() -> int:
     """Delete every ticket past its expiry. Returns how many went.
 
-    Called after a write rather than on a timer, so cleanup is proportional
-    to traffic and the library owns no scheduler. A busy instance sweeps
-    constantly; a quiet one accumulates nothing, because nothing is arriving.
+    Called before a read and after a write rather than on a timer, so
+    cleanup is proportional to traffic and the library owns no scheduler. A
+    busy instance sweeps constantly; a quiet one accumulates nothing, because
+    nothing is arriving.
+
+    Sweeping before a read is what lets the read carry no expiry predicate:
+    once expired rows are gone, found means valid.
     """
     from django.utils import timezone
 
@@ -100,3 +106,64 @@ def store_ticket(ticket):
     # survive, and doing it in this order means a sweep can never race it.
     purge_expired()
     return row
+
+
+def redeem_ticket(token):
+    """Admit an arriving session, consuming its ticket.
+
+    Returns the ticket's fields on success and ``None`` on refusal. The row
+    is gone by then, so this is the caller's only chance to learn whose
+    account and character to rebuild — a bare ``True`` would say a session
+    may be admitted without saying who it is.
+
+    Not named ``is_authorized``: it is not a question you may ask twice.
+    Success deletes, so a second call refuses a ticket that was good moments
+    earlier.
+
+    Each refusal is logged with the check that failed. From outside they are
+    one ``None``, and this is the only place that knows which. An absent
+    token is not a refusal and logs nothing — an ordinary connection presents
+    none, and logging that would bury the real ones.
+    """
+    from evennia_message_bus import get_instance_id
+
+    from .models import Ticket
+
+    if not token:
+        return None
+
+    purge_expired()
+
+    row = Ticket.objects.filter(token=token).first()
+    if row is None:
+        scaling_log(
+            f"Ticket refused: no live ticket for token {token!r}. It was "
+            f"never issued, has already been redeemed, or has expired.",
+            level="WARN",
+        )
+        return None
+
+    instance_id = get_instance_id()
+    if row.to_instance != instance_id:
+        scaling_log(
+            f"Ticket refused: addressed to {row.to_instance!r} but presented "
+            f"at {instance_id!r}. Something is misrouted.",
+            level="WARN",
+        )
+        return None
+
+    ticket = {
+        "token": row.token,
+        "account_archive_id": row.account_archive_id,
+        "character_archive_id": row.character_archive_id,
+        "to_instance": row.to_instance,
+    }
+
+    # By character rather than by token. A character can only be in one
+    # place, so honouring one ticket has to invalidate any sibling —
+    # otherwise a retried handoff leaves a second ticket able to pull that
+    # character somewhere it has already left.
+    Ticket.objects.filter(
+        character_archive_id=row.character_archive_id
+    ).delete()
+    return ticket

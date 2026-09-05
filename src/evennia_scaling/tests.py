@@ -8,9 +8,11 @@ so the coverage trail reads in both directions.
 Discovered by Django's test runner via runtests.py at the repository root.
 """
 
+import json
 import unittest
 from datetime import timedelta
 
+from django.conf import settings
 from django.test import TestCase, override_settings
 
 import evennia_scaling
@@ -322,3 +324,303 @@ class TestMessages(TestCase):
         from evennia_scaling.messages import SessionAuthorized
 
         self.assertIs(get_type("session_authorized"), SessionAuthorized)
+
+
+@override_settings(MESSAGEBUS_INSTANCE_ID="shard0")
+class TestRedemption(TestCase):
+    """TK — redeeming a ticket on arrival."""
+
+    HERE = "shard0"
+
+    def _stored(self, to_instance=HERE, character="character-a"):
+        from evennia_scaling.tickets import store_ticket
+
+        ticket = create_ticket("account-a", character, to_instance)
+        store_ticket(ticket)
+        return ticket
+
+    def test_tk_10_redeems_a_live_ticket_for_this_instance(self):
+        """TK-10: the fields are how the caller learns whom to rebuild.
+
+        A bare True would say a session may be admitted without saying who
+        it is.
+        """
+        from evennia_scaling.tickets import redeem_ticket
+
+        ticket = self._stored()
+        redeemed = redeem_ticket(ticket["token"])
+
+        self.assertEqual(
+            redeemed["account_archive_id"], ticket["account_archive_id"]
+        )
+        self.assertEqual(
+            redeemed["character_archive_id"], ticket["character_archive_id"]
+        )
+
+    def test_tk_11_refuses_an_unknown_token(self):
+        """TK-11: never issued, already redeemed, or expired and swept."""
+        from evennia_scaling.tickets import redeem_ticket
+
+        self.assertIsNone(redeem_ticket("never-issued"))
+
+    def test_tk_12_refuses_a_ticket_for_another_instance(self):
+        """TK-12: arriving here means something is misrouted.
+
+        Left intact, so the instance it was addressed to can still honour it.
+        """
+        from evennia_scaling.models import Ticket
+        from evennia_scaling.tickets import redeem_ticket
+
+        ticket = self._stored(to_instance="somewhere-else")
+        self.assertIsNone(redeem_ticket(ticket["token"]))
+        self.assertTrue(Ticket.objects.filter(token=ticket["token"]).exists())
+
+    def test_tk_13_refuses_an_expired_ticket(self):
+        """TK-13: swept before the lookup, so it is simply absent."""
+        from django.utils import timezone
+
+        from evennia_scaling.models import Ticket
+        from evennia_scaling.tickets import redeem_ticket
+
+        ticket = self._stored()
+        Ticket.objects.filter(token=ticket["token"]).update(
+            expires_at=timezone.now() - timedelta(seconds=1)
+        )
+        self.assertIsNone(redeem_ticket(ticket["token"]))
+
+    def test_tk_14_a_redeemed_ticket_cannot_be_redeemed_again(self):
+        """TK-14: success deletes, which is why it is not a question."""
+        from evennia_scaling.tickets import redeem_ticket
+
+        ticket = self._stored()
+        self.assertIsNotNone(redeem_ticket(ticket["token"]))
+        self.assertIsNone(redeem_ticket(ticket["token"]))
+
+    def test_tk_15_redeeming_consumes_siblings_for_the_same_character(self):
+        """TK-15: a character can only be in one place.
+
+        A retried handoff would otherwise leave a second ticket able to pull
+        that character somewhere it has already left.
+        """
+        from evennia_scaling.models import Ticket
+        from evennia_scaling.tickets import redeem_ticket
+
+        first = self._stored()
+        second = self._stored()
+
+        redeem_ticket(first["token"])
+        self.assertFalse(Ticket.objects.filter(token=second["token"]).exists())
+
+    def test_tk_16_a_refusal_is_logged_with_the_failed_check(self):
+        """TK-16: from outside every refusal is one None.
+
+        This is the only place that knows which check failed, so a refusal
+        that logged nothing would leave no way to tell them apart.
+        """
+        from unittest import mock
+
+        from evennia_scaling.tickets import redeem_ticket
+
+        ticket = self._stored(to_instance="somewhere-else")
+        with mock.patch("evennia_scaling.tickets.scaling_log") as logged:
+            redeem_ticket(ticket["token"])
+
+        message = logged.call_args.args[0]
+        self.assertIn("somewhere-else", message)
+        self.assertEqual(logged.call_args.kwargs.get("level"), "WARN")
+
+    def test_tk_17_no_token_is_silent(self):
+        """TK-17: an absence is not a refusal.
+
+        An ordinary connection presents no token, and logging that would
+        bury the real refusals.
+        """
+        from unittest import mock
+
+        from evennia_scaling.tickets import redeem_ticket
+
+        with mock.patch("evennia_scaling.tickets.scaling_log") as logged:
+            self.assertIsNone(redeem_ticket(None))
+        logged.assert_not_called()
+
+
+class _FakeSession:
+    """A Server session, reduced to what `load_sync_data` touches."""
+
+    def __init__(self, server_data=None, logged_in=False, uid=None):
+        self.server_data = server_data or {}
+        self.logged_in = logged_in
+        self.uid = uid
+        self.loaded = []
+
+
+def _session_base():
+    """A stand-in for Evennia's ServerSession, recording the sync."""
+
+    class FakeServerSession(_FakeSession):
+        def load_sync_data(self, sessdata):
+            self.loaded.append(sessdata)
+
+    return FakeServerSession
+
+
+@override_settings(MESSAGEBUS_INSTANCE_ID="shard0", SCALING_ROLE="shard")
+class TestServerSession(TestCase):
+    """SS — the Server session override."""
+
+    def _built(self, **kwargs):
+        from evennia_scaling.sessions import make_scaling_session
+
+        return make_scaling_session(_session_base())(**kwargs)
+
+    def _payload(self, token):
+        from evennia_portal_multiplex.move import PAYLOAD_KEY
+
+        from evennia_scaling.sessions import SCALING_TICKET_KEY
+
+        return {PAYLOAD_KEY: json.dumps({SCALING_TICKET_KEY: token})}
+
+    def test_ss_01_subclasses_the_consumers_session_class(self):
+        """SS-01: a consumer's own session class stays underneath ours."""
+        from evennia_scaling.sessions import make_scaling_session
+
+        base = _session_base()
+        self.assertTrue(issubclass(make_scaling_session(base), base))
+
+    def test_ss_02_ready_stashes_and_repoints_the_setting(self):
+        """SS-02: Evennia resolves the setting later, by dotted path."""
+        from django.apps import apps as django_apps
+
+        theirs = "evennia.server.serversession.ServerSession"
+        config = django_apps.get_app_config("evennia_scaling")
+        with override_settings(SERVER_SESSION_CLASS=theirs):
+            config.ready()
+            self.assertEqual(
+                settings.SERVER_SESSION_CLASS,
+                "evennia_scaling.sessions.ScalingServerSession",
+            )
+            self.assertEqual(settings._SCALING_ORIGINAL_SESSION_CLASS, theirs)
+
+    def test_ss_03_load_sync_data_calls_the_base(self):
+        """SS-03: ours is the leaf, so theirs still runs underneath."""
+        from unittest import mock
+
+        session = self._built()
+        with mock.patch(
+            "evennia_scaling.sessions.redeem_ticket", return_value=None
+        ), mock.patch("evennia_scaling.sessions.send_session"):
+            session.load_sync_data({"sessid": 1})
+        self.assertEqual(session.loaded, [{"sessid": 1}])
+
+    def test_ss_04_an_authenticated_session_is_left_alone(self):
+        """SS-04: it did not arrive by transfer.
+
+        Admitting it again would fire the login hooks twice.
+        """
+        from unittest import mock
+
+        session = self._built(logged_in=True, uid=1)
+        with mock.patch(
+            "evennia_scaling.sessions.redeem_ticket"
+        ) as redeeming:
+            session.load_sync_data({})
+        redeeming.assert_not_called()
+
+    def test_ss_05_reads_the_token_from_the_payload(self):
+        """SS-05: multiplex carries it; this is where it is read back."""
+        from unittest import mock
+
+        session = self._built(server_data=self._payload("abc123"))
+        with mock.patch(
+            "evennia_scaling.sessions.redeem_ticket", return_value=None
+        ) as redeeming, mock.patch(
+            "evennia_scaling.sessions.process_inbox"
+        ), mock.patch(
+            "evennia_scaling.sessions.send_session"
+        ):
+            session.load_sync_data({})
+        redeeming.assert_called_once_with("abc123")
+
+    def test_ss_06_an_unreadable_payload_yields_no_token(self):
+        """SS-06: absent, corrupt, or carrying no token are one answer.
+
+        `json.loads` raises on a corrupt string, and this runs on every
+        session that arrives with a payload — so an unreadable one is treated
+        as untickered rather than breaking the arrival.
+        """
+        from unittest import mock
+
+        from evennia_portal_multiplex.move import PAYLOAD_KEY
+
+        for server_data in (
+            {},
+            {PAYLOAD_KEY: "not json at all"},
+            {PAYLOAD_KEY: json.dumps({"something_else": "x"})},
+        ):
+            with self.subTest(server_data=server_data):
+                session = self._built(server_data=server_data)
+                with mock.patch(
+                    "evennia_scaling.sessions.redeem_ticket",
+                    return_value=None,
+                ) as redeeming, mock.patch(
+                    "evennia_scaling.sessions.send_session"
+                ):
+                    session.load_sync_data({})
+                redeeming.assert_called_once_with(None)
+
+    def test_ss_07_a_ticketed_session_drains_the_bus_first(self):
+        """SS-07: the session is faster than the bus's polling interval.
+
+        The sender commits the handoff row before asking for the move, so
+        the row is there — draining reads it rather than waiting for a poll.
+        """
+        from unittest import mock
+
+        session = self._built(server_data=self._payload("abc123"))
+        with mock.patch(
+            "evennia_scaling.sessions.process_inbox"
+        ) as draining, mock.patch(
+            "evennia_scaling.sessions.redeem_ticket", return_value=None
+        ), mock.patch(
+            "evennia_scaling.sessions.send_session"
+        ):
+            session.load_sync_data({})
+        draining.assert_called_once()
+
+    def test_ss_08_an_unticketed_session_does_not_drain_the_bus(self):
+        """SS-08: an ordinary connection pays for no database round trip."""
+        from unittest import mock
+
+        session = self._built()
+        with mock.patch(
+            "evennia_scaling.sessions.process_inbox"
+        ) as draining, mock.patch(
+            "evennia_scaling.sessions.redeem_ticket", return_value=None
+        ), mock.patch(
+            "evennia_scaling.sessions.send_session"
+        ):
+            session.load_sync_data({})
+        draining.assert_not_called()
+
+    def test_ss_09_a_shard_sends_an_unadmitted_session_to_the_router(self):
+        """SS-09: a shard holds no accounts, so there is nowhere else."""
+        from unittest import mock
+
+        session = self._built()
+        with mock.patch(
+            "evennia_scaling.sessions.redeem_ticket", return_value=None
+        ), mock.patch("evennia_scaling.sessions.send_session") as sending:
+            session.load_sync_data({})
+        sending.assert_called_once_with(session, "router")
+
+    @override_settings(SCALING_ROLE="router")
+    def test_ss_10_a_router_leaves_an_unadmitted_session_alone(self):
+        """SS-10: Evennia shows it the login screen."""
+        from unittest import mock
+
+        session = self._built()
+        with mock.patch(
+            "evennia_scaling.sessions.redeem_ticket", return_value=None
+        ), mock.patch("evennia_scaling.sessions.send_session") as sending:
+            session.load_sync_data({})
+        sending.assert_not_called()
