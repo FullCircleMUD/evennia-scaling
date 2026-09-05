@@ -13,6 +13,10 @@ from evennia_archive.mixins import (
 from .config import get_shards, get_start_location_shard
 from .log import scaling_log
 
+#: The Attribute key holding the other half of where a character is: which
+#: room, in the database of the shard `current_shard` names.
+CURRENT_ROOM_REF_KEY = "current_room_ref"
+
 #: The Attribute key naming where a character is in the game world.
 #: `AttributeProperty` takes its key from the attribute name, so this and the
 #: property below have to agree.
@@ -77,6 +81,56 @@ class ScalingCharacterMixin(ArchivableCharacterMixin):
         default=get_start_location_shard,
         strattr=True,
     )
+
+    #: The other half of the pair: which room, in the database of the shard
+    #: above. No default — a room key means nothing without a shard beside
+    #: it, so there is nothing useful to fall back to at read time.
+    #:
+    #: Nothing validates it. It names a row in a database this instance
+    #: cannot see, so the only check available is that a value is present.
+    current_room_ref = AttributeProperty(default=None)
+
+    def ensure_location_for_transfer(self):
+        """Complete where this character would be sent, and return the shard.
+
+        Named for the transfer rather than for the character's location,
+        because it is not the same thing. `character.location` is the room
+        object this character is standing in *now*, on the instance running
+        it. This pair is what survives the archive, and the two drift apart
+        the moment a character walks anywhere — until something restamps
+        the pair.
+
+        `current_shard` and `current_room_ref` are one composite key —
+        which instance, then which room in that instance's database. A
+        shard alone does not say where a character stands.
+
+        Returns the shard, so a call site reads as the destination it is.
+
+        Either half being unusable means the character cannot be sent
+        anywhere, because **the destination is one half of the pair**.
+        There is nowhere to send them until both halves agree, which is why
+        this runs before a transfer rather than on arrival — and why the
+        arrival can assume both are present.
+
+        Writes the home pair, both halves together. Keeping a start shard
+        with no room key would leave a destination that still cannot say
+        where on it the character stands.
+
+        The shard half looks redundant, since `at_set` refuses anything
+        outside the roster — but `.db` bypasses that, and a shard removed
+        from the roster after a character was stamped goes stale the same
+        way.
+        """
+        from django.conf import settings
+
+        from .config import get_default_home_shard, get_shards
+
+        if self.current_shard in get_shards() and self.current_room_ref:
+            return self.current_shard
+
+        self.current_shard = get_default_home_shard()
+        self.current_room_ref = settings.DEFAULT_HOME
+        return self.current_shard
 
 
 class ScalingAccountMixin(ArchivableAccountMixin):
@@ -353,7 +407,11 @@ class ScalingAccountMixin(ArchivableAccountMixin):
             self.msg(f"You don't have permission to puppet '{obj.key}'.")
             return
 
-        transfer_to_instance(self, session, obj, obj.current_shard)
+        # The destination is one half of the character's location pair, so
+        # the pair has to be complete before there is anywhere to send them.
+        transfer_to_instance(
+            self, session, obj, obj.ensure_location_for_transfer()
+        )
 
     @classmethod
     def restore_characters(cls, account):

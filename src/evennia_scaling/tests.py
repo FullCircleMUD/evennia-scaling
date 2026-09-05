@@ -838,6 +838,57 @@ class TestCurrentShard(TestCase):
             character.current_shard = None
         self.assertIn("current_shard", str(raised.exception))
 
+    def test_sh_07_the_room_ref_is_stored_as_an_attribute(self):
+        """SH-07: an Attribute survives archiving; a field would not.
+
+        Half of a composite key is no use on its own, so this has to come
+        through the round trip with `current_shard`.
+        """
+        from evennia_scaling.mixins import CURRENT_ROOM_REF_KEY
+
+        character = self._character()
+        character.current_room_ref = 5
+        self.assertTrue(character.attributes.has(CURRENT_ROOM_REF_KEY))
+
+    def test_sh_08_an_unassigned_room_ref_reads_as_none(self):
+        """SH-08: a room key means nothing without a shard beside it.
+
+        So there is no useful value to fall back to at read time — the pair
+        is completed at the moment of use instead.
+        """
+        character = self._character()
+        self.assertIsNone(character.current_room_ref)
+
+    @override_settings(
+        SCALING_DEFAULT_HOME_SHARD="shard1", DEFAULT_HOME="#99"
+    )
+    def test_sh_09_a_complete_pair_is_left_alone(self):
+        """SH-09: they are where they left off, and that is where they go."""
+        character = self._character()
+        character.current_shard = "shard0"
+        character.current_room_ref = 5
+
+        self.assertEqual(character.ensure_location_for_transfer(), "shard0")
+        self.assertEqual(character.current_shard, "shard0")
+        self.assertEqual(character.current_room_ref, 5)
+
+    @override_settings(
+        SCALING_DEFAULT_HOME_SHARD="shard1", DEFAULT_HOME="#99"
+    )
+    def test_sh_10_a_broken_pair_is_replaced_by_home(self):
+        """SH-10: the destination is one half of the pair.
+
+        Keeping a start shard with no room key would leave a destination
+        that still cannot say where on it the character stands, so both
+        halves go together.
+        """
+        character = self._character()
+        character.current_shard = "shard0"
+
+        self.assertEqual(character.ensure_location_for_transfer(), "shard1")
+        self.assertEqual(character.current_shard, "shard1")
+        self.assertEqual(character.current_room_ref, "#99")
+
     def test_sh_06_carries_the_archive_mixin(self):
         """SH-06: one mixin on the character, not two.
 
@@ -1398,6 +1449,7 @@ class TestGoingInCharacter(TestCase):
         """
         account, character = self._playing()
         character.current_shard = "shard1"
+        character.current_room_ref = 5
         session = _PlayingSession()
 
         transfer, _ = self._puppet(account, character, session)

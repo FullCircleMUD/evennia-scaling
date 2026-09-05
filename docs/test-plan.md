@@ -284,6 +284,34 @@ tidying `"Shard0 "` into `"shard0"` would hide the typo rather than report it.
 writes through the AttributeHandler and the descriptor never runs. Nothing can close that door from
 here.
 
+#### Where a character is, as a pair
+
+A shard alone does not say where a character stands. **`current_shard` and `current_room_ref` are one
+composite key** — which instance, then which room in that instance's database.
+
+`current_room_ref` has no default and reads as `None` until something sets it. A room key is meaningless
+without a shard beside it, so there is no useful value to fall back to at read time; the pair is
+completed at the moment of use instead.
+
+Nothing validates the room key. It names a row in a database this instance cannot see, so the only check
+available is that a value is present.
+
+**`ensure_location_for_transfer()` completes the pair and returns the shard.** Either half being unusable —
+a shard outside `SCALING_SHARDS`, or no room key — means the character cannot be sent anywhere, because
+*the destination is one half of the pair*. There is nowhere to send them until both halves agree, which
+is why this happens before the transfer rather than on arrival. It writes the home pair, both halves
+together: keeping a start shard with no room key would leave a destination that still cannot say where
+on it the character stands.
+
+The shard half looks redundant, since `at_set` refuses anything outside the roster — but `.db` bypasses
+that, and a shard removed from the roster after a character was stamped goes stale the same way.
+
+Named for the transfer rather than for the character's location, because it is not the same thing:
+`character.location` is the room object the character stands in *now*, on the instance running it, and
+the two drift apart the moment a character walks anywhere.
+
+The arrival can therefore assume both halves are present, because the sending side guaranteed it.
+
 **The mixin carries `ArchivableCharacterMixin`**, so a consumer adds one mixin to their character class
 rather than two.
 
@@ -304,6 +332,10 @@ knows nothing about this subclass. No override exists today.
 | SH-04 | `None` is refused, saying what it means rather than reading as a typo | test_sh_04_refuses_none |
 | SH-05 | A character never assigned a shard reads as `SCALING_START_LOCATION_SHARD` | test_sh_05_a_character_never_assigned_reads_as_the_start_shard |
 | SH-06 | `ScalingCharacterMixin` extends `ArchivableCharacterMixin`, so one mixin on the character satisfies both | test_sh_06_carries_the_archive_mixin |
+| SH-07 | `current_room_ref` is stored as an Attribute, so it survives the archive round trip | test_sh_07_the_room_ref_is_stored_as_an_attribute |
+| SH-08 | A character never assigned one reads as `None` | test_sh_08_an_unassigned_room_ref_reads_as_none |
+| SH-09 | `ensure_location_for_transfer` leaves a character with both halves alone | test_sh_09_a_complete_pair_is_left_alone |
+| SH-10 | A character missing either half is given the home pair, both halves | test_sh_10_a_broken_pair_is_replaced_by_home |
 
 ### SV — startup validation of the consumer's typeclasses
 
@@ -466,6 +498,10 @@ there, and archiving one, deleting it and rebuilding it elsewhere takes an opera
 They are an administration tool rather than a way to play, so every part of the transfer steps aside for
 them — here, at the refresh on login, and wherever else the machinery would pick them up.
 
+The destination comes from `ensure_location_for_transfer()` rather than from `current_shard` directly.
+The destination is one half of the character's location pair, so the pair has to be complete before
+there is anywhere to send them — see § SH.
+
 Nothing here handles the outcome of the move. `transfer_to_instance` owns that, so the in-character
 path, the out-of-character path and a consumer's own shard-to-shard move all report the same way.
 
@@ -473,7 +509,7 @@ path, the out-of-character path and a consumer's own shard-to-shard move all rep
 |---|---|---|
 | IC-01 | On a shard, `puppet_object` defers to Evennia and puppets normally | test_ic_01_a_shard_puppets_normally |
 | IC-02 | On a router, the character is not puppeted | test_ic_02_a_router_does_not_puppet |
-| IC-03 | On a router, the session, character and the character's shard are handed to the transfer | test_ic_03_a_router_hands_the_session_to_the_transfer |
+| IC-03 | On a router, the session, character and the completed destination are handed to the transfer | test_ic_03_a_router_hands_the_session_to_the_transfer |
 | IC-04 | A character the account cannot puppet is refused, and nothing is transferred | test_ic_04_a_character_they_cannot_puppet_is_refused |
 | IC-05 | A missing object or session raises `RuntimeError`, as Evennia's does | test_ic_05_a_missing_object_or_session_raises |
 | IC-06 | A superuser puppets normally, even on a router | test_ic_06_a_superuser_puppets_normally |

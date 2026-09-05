@@ -2,6 +2,24 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-05 — where a character is, as a pair
+
+120 tests.
+
+- **`current_room_ref`** — the other half of a character's location. `current_shard` says which
+  instance; this says which room in that instance's database. A shard alone does not say where a
+  character stands.
+- **`ensure_location_for_transfer()`** — completes the pair before a transfer and returns the shard.
+  Either half unusable means there is nowhere to send them, because the destination *is* one half of the
+  pair — so it is settled on the sending side rather than on arrival, and the arrival can assume both
+  are present.
+- Named for the transfer rather than the character's location, because they are different things:
+  `character.location` is the room the character stands in now, and the two drift apart the moment a
+  character walks anywhere.
+
+Nothing restamps the pair yet, so a character transfers back to where they were last stamped rather than
+where they stood.
+
 ## 2026-09-05 — leaving an instance
 
 116 tests. A session and its character now leave an instance correctly. Nothing arrives yet — the
