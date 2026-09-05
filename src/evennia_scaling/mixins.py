@@ -299,7 +299,14 @@ class ScalingAccountMixin(ArchivableAccountMixin):
         if archive_id is None:
             return None
 
-        return cls.rebuild_from_archive(archive_id)
+        account = cls.rebuild_from_archive(archive_id)
+
+        # The rebuild deleted the account's local characters, so without
+        # this a login leaves an empty character-select menu — and has
+        # destroyed the local copies on the way. Role-gated inside itself,
+        # so it does nothing on a shard.
+        cls.restore_characters(account)
+        return account
 
     @classmethod
     def authenticate(cls, username, password, ip="", **kwargs):

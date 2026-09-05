@@ -23,9 +23,10 @@ several more options for customizing the Guest account system.
 """
 
 from evennia.accounts.accounts import DefaultAccount, DefaultGuest
+from evennia_scaling.mixins import ScalingAccountMixin
 
 
-class Account(DefaultAccount):
+class Account(ScalingAccountMixin, DefaultAccount):
     """
     An Account is the actual OOC player entity. It doesn't exist in the game,
     but puppets characters.

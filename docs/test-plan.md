@@ -22,6 +22,7 @@ Behaviour is agreed here first, before any test or code — see
 | `AC` | The account mixin |
 | `HO` | Handoff — sending a session and what it plays to another instance |
 | `IC` | Going in character |
+| `LK` | Locking account changes to out of character |
 | `OC` | Going out of character |
 | `SH` | Where a character is in the game world |
 | `SV` | Startup validation of the consumer's typeclasses |
@@ -38,6 +39,7 @@ The fake objects the suite needs, named and purposed.
 | `tests/bad_mro_character_stub.py` | Both mixins with archive's first. Raises `TypeError` on import — SV-05 |
 | `tests/bad_mro_account_stub.py` | The account side of the same — SV-10 |
 | `tests/bad_import_stub.py` | Raises `TypeError` on import for an unrelated reason — SV-06 |
+| `TestArrival` | Its own class for `SS-11` to `SS-16`: the rest of `SS` uses a stand-in session, and these need real accounts, characters and an archive to rebuild from. It reads ids **before** the arrival runs — the rebuild deletes and restores, so an object a test created is gone and its id reads as `None` |
 | `_PlayingSession` | A Server session as the sending paths see it — an address and what it puppets |
 | `_FakeSession` | A Server session as the arrival path sees it — sync data, `logged_in`, `uid` |
 
@@ -197,6 +199,13 @@ It adds one decision to that lookup: **a superuser is never rebuilt.** Evennia e
 and replacing it with an archived copy takes an operator's way in with it. The guard runs before the
 rebuild, and its local lookup is `filter(username=identifier)`.
 
+**It restores the roster too.** `rebuild_from_archive` deletes the account's local characters, so a
+login that stopped at the rebuild would leave a player looking at an empty character-select menu — and
+would have destroyed the local copies on the way. The two doors in are symmetrical about this: the
+ticket door restores the roster from `reconstitute_for_ticket`, the login door from here. Neither can
+fire twice, because the ticket door never goes through this method — it already holds the archive id
+and has no username to search by.
+
 That local lookup is a second tie to the username, and it is not a seam. A consumer who overrides
 `find_in_archive` to identify accounts some other way must override this method too, or the guard is
 handed something that is not a username, matches nothing, and stops protecting anything while still
@@ -249,6 +258,7 @@ also fires `at_post_add_character`.
 | AC-14 | Restored characters are on the account's roster | test_ac_14_restored_characters_join_the_roster |
 | AC-15 | On a shard, nothing is restored | test_ac_15_a_shard_restores_nothing |
 | AC-16 | Characters owned by a different account are not restored | test_ac_16_another_accounts_characters_are_left_alone |
+| AC-17 | Refreshing an account restores its characters, so a login does not empty the roster | test_ac_17_refreshing_restores_the_characters |
 
 ### SH — where a character is in the game world
 
@@ -631,6 +641,59 @@ be the one move in the library that fails silently.
 | OC-16 | A superuser goes out of character where it stands, and is not transferred | test_oc_16_a_superuser_goes_ooc_where_it_stands |
 | OC-17 | The stranded recovery reports its outcome, like any other move | test_oc_17_the_stranded_recovery_reports_its_outcome |
 
+### LK — locking account changes to out of character
+
+**An account has one authoritative copy and it lives on the router.** A shard rebuilds the account from
+the archive so an arriving session has something to be, and that copy is a *working copy* — discarded
+when the character leaves. So a command that changes account state a player would be upset to lose has
+to be out of character only, or the change is written to the copy that gets thrown away and vanishes
+with no error and nothing in any log.
+
+That is what makes the router's copy authoritative, which in turn is what lets it stay put: an account
+that cannot have changed elsewhere never has to be rebuilt, so its primary key is stable and anything
+holding it — a website session, most obviously — keeps working.
+
+**The mechanism is a lock, not a code change.** `is_ooc()` is a lockfunc; Evennia passes the session to
+a `cmd` access check, so a lockfunc can see whether anything is puppeted. Each command is subclassed
+with nothing but its lockstring, and `ready()` points the module attribute at the subclass — Evennia's
+own cmdsets read `account.CmdPassword` when a session's cmdset is built, so they pick ours up without
+their source changing.
+
+Each subclass carries its **whole** lockstring rather than an appended fragment, so it can be read
+against what Evennia ships. `CmdChannel` is why: its lock declares four access types, and `is_ooc()`
+belongs only in the `cmd:` clause.
+
+**These are restrictions Evennia does not have.** `ic` while puppeted is a supported flow there — it
+switches characters — and `quell` resets the puppet's lock cache precisely so it works in character. A
+consumer who knows Evennia will notice.
+
+**Nothing else is changed.** Permissions stay as Evennia set them: a consumer wanting `charcreate`
+builder-only does that themselves.
+
+| ID | Case | Test function |
+|---|---|---|
+| LK-01 | `is_ooc()` is true when the session has no puppet | test_lk_01_is_ooc_is_true_without_a_puppet |
+| LK-02 | `is_ooc()` is false when the session is puppeting | test_lk_02_is_ooc_is_false_while_puppeting |
+| LK-03 | `is_ooc()` is true when there is no session at all — a check outside a command is not a puppet | test_lk_03_is_ooc_is_true_without_a_session |
+| LK-04 | Every overridden command carries the lockstring it is meant to | test_lk_04_each_override_carries_its_lockstring |
+| LK-05 | Each override keeps everything else its parent had — only the lock differs | test_lk_05_an_override_changes_nothing_but_the_lock |
+| LK-06 | `ready()` points each module attribute at the override, so Evennia's cmdsets pick it up | test_lk_06_ready_points_the_module_attributes_at_the_overrides |
+
+
+`LK-05` is the one that catches a copied lockstring with a clause dropped. It asserts no *code* changed
+— the parent's `func` and `parse` are still what run — rather than "defines only `locks`", because
+Evennia's command metaclass adds `_keyaliases` and `help_category` to every subclass.
+
+**`CmdChannel` is not overridden yet, and the reason is an install-point problem rather than a lock.**
+`evennia.commands.default.comms` imports `evmenu`, which builds a class from Evennia's lazy `Command`
+export — not populated until `evennia._init()` runs *after* `django.setup()`. So it cannot be imported
+from `AppConfig.ready()`, and the channel override needs somewhere later in the boot to be installed
+from. Its lockstring is written and its case arrives with it.
+
+`nick` is not a lock at all. It writes to whatever the caller currently *is*, so account nicks can only
+be set out of character already. The exception is `nick/clearall`, which reaches through the character
+to `caller.account.nicks.clear()` — a written override of that one switch, still to do.
+
 ### MS — messages between instances
 
 `SessionAuthorized` carries a ticket to the instance a session is about to arrive at, so the receiver
@@ -689,6 +752,35 @@ again would fire the login hooks twice.
 a session nothing has admitted has not been in character yet, and the out-of-character game is the
 router's. On the router there is nothing to do: Evennia shows the login screen.
 
+#### Admitting a redeemed ticket
+
+`reconstitute_for_ticket(session, ticket)` rebuilds what the ticket names and hands back the account.
+`None` means the session is not admitted, and the bounce above is what happens next — so every failure
+here is one `return None` and no new branch.
+
+The roles differ in what comes back with the account. A shard receives exactly one character, the one
+the ticket names; a router renders a character-select menu, so it needs the whole roster.
+`restore_characters` is gated on the role inside itself, so calling it does nothing on a shard.
+
+**`_last_puppet` is the reference the archive drops.** `at_post_login` reads it to auto-puppet, and a
+bare `ic` resolves through it. Without it Evennia says the character does not exist — which it does,
+just not under the primary key the restored account remembers. This is the only place both objects are
+in hand.
+
+**`uid` and `logged_in` are set rather than calling `sessionhandler.login`.** Evennia's `portal_connect`
+checks that pair a few lines after `load_sync_data` returns and logs the session in itself; calling it
+here would fire every login hook twice. Setting `logged_in` also suppresses the login screen, which
+`_run_cmd_login` only sends when it is false.
+
+**Placement is deliberately unfinished.** `place_in_world(character)` puts an arriving character
+somewhere in this instance's world; today that is Limbo, and reading the character's own room key is
+work of its own. What is built now is everything *around* it: the rebuild, the admission, and the
+failure path. It raises `PlacementFailed` when it cannot place someone, and the arrival treats that as
+a session it cannot admit — so when the real placement lands, nothing around it has to change.
+
+So none of the cases below assert where a character ends up. `place_in_world` is called with the right
+character, and its failure is handled.
+
 | ID | Case | Test function |
 |---|---|---|
 | SS-01 | The generated class subclasses whatever session class the consumer had configured | test_ss_01_subclasses_the_consumers_session_class |
@@ -701,10 +793,12 @@ router's. On the router there is nothing to do: Evennia shows the login screen.
 | SS-08 | A session carrying no token does not drain the bus | test_ss_08_an_unticketed_session_does_not_drain_the_bus |
 | SS-09 | A shard sends a session it cannot admit to the router | test_ss_09_a_shard_sends_an_unadmitted_session_to_the_router |
 | SS-10 | A router leaves a session it cannot admit alone | test_ss_10_a_router_leaves_an_unadmitted_session_alone |
-
-**Not built yet:** what happens once a ticket is redeemed — admitting the session and rebuilding the
-account and character from the archive. The mixins that rebuild them exist; what calls them on arrival
-does not. Cases arrive with it.
+| SS-11 | A redeemed ticket rebuilds the account and admits the session | test_ss_11_a_redeemed_ticket_admits_the_session |
+| SS-12 | On a shard, the character the ticket names is rebuilt and handed to `place_in_world` | test_ss_12_a_shard_rebuilds_and_places_the_ticketed_character |
+| SS-13 | On a router, the account's whole roster is rebuilt, and no character is placed | test_ss_13_a_router_rebuilds_the_roster_and_places_nobody |
+| SS-14 | The rebuilt character becomes `_last_puppet`, so auto-puppet finds it | test_ss_14_the_character_becomes_last_puppet |
+| SS-15 | An account the archive does not hold leaves the session unadmitted, logged | test_ss_15_an_unarchived_account_is_not_admitted |
+| SS-16 | A character that cannot be placed leaves the session unadmitted, logged | test_ss_16_a_character_that_cannot_be_placed_is_not_admitted |
 
 ### TK — tickets
 

@@ -159,6 +159,32 @@ like a misconfiguration.
 created any way at all is somewhere without the game having to hook chargen. A game that offers a
 choice of starting towns assigns `current_shard` during chargen instead.
 
+## Auto-puppet, per role
+
+Evennia's `AUTO_PUPPET_ON_LOGIN` puppets a character as soon as an account logs in. The two roles need
+opposite answers, and neither is Evennia's default behaviour for this deployment:
+
+```python
+# the router
+AUTO_PUPPET_ON_LOGIN = False
+
+# every shard
+AUTO_PUPPET_ON_LOGIN = True
+```
+
+**Off on the router**, because going in character there is a *transfer*. Left on, an account with one
+character is auto-puppeted the instant it logs in, which fires `puppet_object`, which sends the session
+straight to a shard — so a player can never reach the character-select menu, and a player coming back
+out of character bounces immediately back in.
+
+**On for a shard**, because a session arrives already knowing which character it is playing. The
+arrival sets the character as `_last_puppet` and logs the session in; auto-puppet is what turns that
+into actually playing.
+
+The library does not set either. They are Evennia's settings and a consumer's to own, and a game may
+have its own reason for a different arrangement — but this is the one that matches how the transfer
+works.
+
 ## Settings this library reads
 
 | Setting | Required | What it names |

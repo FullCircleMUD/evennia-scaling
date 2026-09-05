@@ -32,6 +32,10 @@ SCALING_ROLE = "shard"
 MULTIPLEX_INSTANCE_ID = "shard1"
 MESSAGEBUS_INSTANCE_ID = MULTIPLEX_INSTANCE_ID
 
+# Auto-puppet is on here. A session arrives having already been told which
+# character it is playing, and the point of arriving is to be playing it.
+AUTO_PUPPET_ON_LOGIN = True
+
 # Never listened on: this instance runs no Portal. They are set, and set
 # distinctly, so that starting it fully by accident fails on something
 # obvious rather than on three instances silently fighting over port 4000.

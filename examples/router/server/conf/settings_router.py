@@ -29,6 +29,12 @@ SCALING_ROLE = "router"
 MULTIPLEX_INSTANCE_ID = MULTIPLEX_DEFAULT_INSTANCE  # noqa: F405
 MESSAGEBUS_INSTANCE_ID = MULTIPLEX_DEFAULT_INSTANCE
 
+# Auto-puppet is off here. Going in character on the router is a transfer,
+# so auto-puppeting a returning player would move them straight back out
+# again the moment they arrive — they could never reach the character-select
+# menu that is the whole point of this instance.
+AUTO_PUPPET_ON_LOGIN = False
+
 TELNET_PORTS = [4000]
 WEBSERVER_PORTS = [(4001, 4005)]
 WEBSOCKET_CLIENT_PORT = 4002

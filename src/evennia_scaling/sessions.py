@@ -81,10 +81,19 @@ def make_scaling_session(base):
             # carried one needs no guard here — it comes back None.
             ticket = redeem_ticket(token)
             if ticket:
-                # [TBD — needs building: rebuild the account and character
-                # from the archive and admit the session. That is handoff.py,
-                # which does not exist yet.]
-                return
+                from .handoff import reconstitute_for_ticket
+
+                account = reconstitute_for_ticket(self, ticket)
+                if account:
+                    # Not sessionhandler.login(): `portal_connect` checks
+                    # these two a few lines after we return and logs the
+                    # session in itself, so calling it here would fire every
+                    # login hook twice. Setting logged_in also suppresses
+                    # the login screen, which `_run_cmd_login` only sends
+                    # when it is false.
+                    self.uid = account.id
+                    self.logged_in = True
+                    return
 
             # Nothing admits this session, so it has not been in character
             # yet — and the out-of-character game is the router's. On the

@@ -9,11 +9,12 @@ creation commands.
 """
 
 from evennia.objects.objects import DefaultCharacter
+from evennia_scaling.mixins import ScalingCharacterMixin
 
 from .objects import ObjectParent
 
 
-class Character(ObjectParent, DefaultCharacter):
+class Character(ScalingCharacterMixin, ObjectParent, DefaultCharacter):
     """
     The Character just re-implements some of the Object's methods and hooks
     to represent a Character entity in-game.

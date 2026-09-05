@@ -19,6 +19,16 @@ class EvenniaScalingConfig(AppConfig):
         from . import config
 
         config.check_settings()
+
+        # Registering a message type is an import side effect, so the module
+        # has to be imported somewhere that runs on every instance. Nothing
+        # else does it on a receiving instance: the sender reaches `messages`
+        # through `handoff`, and the receiver imports `handoff` only after a
+        # ticket has been redeemed — which is what cannot happen without the
+        # message. Left out, an arrival refuses a token that was genuinely
+        # issued, because the bus row sits unhandled.
+        from . import messages  # noqa: F401
+
         self._install_session_class()
         self._install_ooc_command()
 
@@ -35,10 +45,21 @@ class EvenniaScalingConfig(AppConfig):
         long after startup.
         """
         from evennia.commands.default import account as account_commands
-
         from . import commands
 
         account_commands.CmdOOC = commands.ScalingCmdOOC
+
+        # The account-state commands, restricted to out of character. Each
+        # override carries only a lockstring; assigning the module attribute
+        # is what puts it in front of Evennia's own cmdsets, which read
+        # `account.CmdPassword` when a session's cmdset is built.
+        account_commands.CmdPassword = commands.ScalingCmdPassword
+        account_commands.CmdOption = commands.ScalingCmdOption
+        account_commands.CmdStyle = commands.ScalingCmdStyle
+        account_commands.CmdQuell = commands.ScalingCmdQuell
+        account_commands.CmdCharCreate = commands.ScalingCmdCharCreate
+        account_commands.CmdCharDelete = commands.ScalingCmdCharDelete
+        account_commands.CmdIC = commands.ScalingCmdIC
 
     def _install_session_class(self):
         """Subclass whatever `SERVER_SESSION_CLASS` names, and repoint it.

@@ -42,6 +42,109 @@ _OUTCOMES = {
 }
 
 
+class PlacementFailed(Exception):
+    """Raised when an arriving character cannot be put anywhere.
+
+    Nothing raises it yet: placement puts an arriving character in this
+    instance's `DEFAULT_HOME`, which always resolves. It exists so the
+    arrival already handles the failure, and reading a character's own room
+    key can land without anything around it changing.
+    """
+
+
+def place_in_world(character):
+    """Put an arriving character somewhere in this instance's world.
+
+    `restore` strips location, home and every other reference — they are
+    primary keys into a database that no longer exists — so a character
+    arrives standing nowhere at all.
+
+    **Deliberately unfinished.** Where a character *should* appear is the
+    room its own `current_room_ref` names, and reading that is work of its
+    own. Until then this is Limbo, and everything around it — the rebuild,
+    the admission, and the failure path — is built and tested.
+
+    Raises `PlacementFailed` when it cannot place someone. That is the
+    contract the arrival is written against.
+    """
+    from django.conf import settings
+    from evennia.utils.search import search_object
+
+    found = search_object(settings.DEFAULT_HOME)
+    if not found:
+        raise PlacementFailed(
+            f"{settings.DEFAULT_HOME} does not resolve in this database, so "
+            f"there is nowhere to put {character}."
+        )
+    character.location = found[0]
+
+
+def reconstitute_for_ticket(session, ticket):
+    """Rebuild what a redeemed ticket names, and return the local account.
+
+    The arrival's half of a transfer. The ticket names the account and the
+    character outright, so nothing is searched for — the identifiers are
+    the lookup.
+
+    Returns the rebuilt account, because `load_sync_data` needs it: setting
+    ``uid`` and ``logged_in`` is what lets `portal_connect` log the session
+    in, and there is nothing to set until the account exists here.
+
+    **``None`` means the session is not admitted**, and the caller's
+    existing bounce is what happens next — so every failure here is one
+    return and no new branch.
+
+    **The roles differ in what comes with the account.** A shard receives
+    exactly one character, the one the ticket names; a router renders a
+    character-select menu, so an account arriving back out of play needs
+    its whole roster. `restore_characters` is gated on the role inside
+    itself, so calling it does nothing on a shard.
+    """
+    from django.conf import settings
+    from evennia.utils.utils import class_from_module
+    from evennia_archive.api import NotArchived, restore
+
+    from .config import ROLE_SHARD, get_role
+
+    account_class = class_from_module(settings.BASE_ACCOUNT_TYPECLASS)
+
+    try:
+        account = account_class.rebuild_from_archive(
+            ticket["account_archive_id"]
+        )
+    except NotArchived:
+        scaling_log(
+            f"ticket named account {ticket['account_archive_id']}, which is "
+            f"not in the archive. The session cannot be admitted.",
+            level="ERROR",
+        )
+        return None
+
+    if get_role() != ROLE_SHARD:
+        account_class.restore_characters(account)
+        return account
+
+    character = restore(ticket["character_archive_id"])
+
+    try:
+        place_in_world(character)
+    except PlacementFailed as failure:
+        scaling_log(
+            f"{character} arrived and could not be placed: {failure} The "
+            f"session cannot be admitted.",
+            level="ERROR",
+        )
+        return None
+
+    # The reference the archive dropped, put back. `at_post_login` reads
+    # this to auto-puppet, and a bare `ic` resolves through it. Without it
+    # Evennia says the character does not exist — which it does, just not
+    # under the primary key the restored account remembers. This is the
+    # only place both objects are in hand.
+    account.db._last_puppet = character
+    return account
+
+
 def report_outcome(moving, account, to_instance):
     """Record what a move came back as, and tell the player where possible.
 
@@ -133,8 +236,6 @@ def transfer_to_instance(account, session, character, to_instance):
     close — deleting it out from under a live session disconnects it, which
     is Evennia's own documented behaviour.
     """
-    import json
-
     # Imported here rather than at module scope: this module is reachable
     # from AppConfig.ready(), and archive's api pulls in its models, which
     # are not loadable that early.
@@ -155,11 +256,12 @@ def transfer_to_instance(account, session, character, to_instance):
     # structurally after Evennia is done, not merely likely to be.
     delay(0, character.delete)
 
+    # A dict, not a string: multiplex serialises the payload itself, and
+    # encoding it here too lands a JSON string of a JSON string at the far
+    # end — where reading it back yields a string rather than a mapping.
     return report_outcome(
         send_session(
-            session,
-            to_instance,
-            json.dumps({SCALING_TICKET_KEY: ticket["token"]}),
+            session, to_instance, {SCALING_TICKET_KEY: ticket["token"]}
         ),
         account,
         to_instance,
@@ -215,8 +317,6 @@ def transfer_to_instance(account, session, character, to_instance):
     close — deleting it out from under a live session disconnects it, which
     is Evennia's own documented behaviour.
     """
-    import json
-
     # Imported here rather than at module scope: this module is reachable
     # from AppConfig.ready(), and archive's api pulls in its models, which
     # are not loadable that early.
@@ -237,10 +337,11 @@ def transfer_to_instance(account, session, character, to_instance):
     # structurally after Evennia is done, not merely likely to be.
     delay(0, character.delete)
 
+    # A mapping, not a string: multiplex serialises the payload itself, and
+    # encoding it here too lands a JSON string of a JSON string at the far
+    # end, where reading it back yields a string rather than a mapping.
     moving = send_session(
-        session,
-        to_instance,
-        json.dumps({SCALING_TICKET_KEY: ticket["token"]}),
+        session, to_instance, {SCALING_TICKET_KEY: ticket["token"]}
     )
 
     def report(result):

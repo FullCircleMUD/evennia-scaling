@@ -756,6 +756,30 @@ class TestAccountMixin(TestCase):
         self.assertEqual(list(account.characters.all()), [])
 
     @override_settings(SCALING_ROLE="router")
+    def test_ac_17_refreshing_restores_the_characters(self):
+        """AC-17: the rebuild deletes them, so something has to bring them back.
+
+        A login that stopped at the rebuild would leave a player looking at
+        an empty character-select menu, having destroyed the local copies
+        on the way.
+        """
+        from evennia_archive.api import archive
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+        username = account.username
+        self._archived_character(account, "Rowan")
+        archive(account)
+
+        refreshed = ScalingAccount.refresh_from_archive(username)
+
+        self.assertEqual(
+            [character.key for character in refreshed.characters.all()],
+            ["Rowan"],
+        )
+
+    @override_settings(SCALING_ROLE="router")
     def test_ac_16_another_accounts_characters_are_left_alone(self):
         """AC-16: the stamp's value is what makes the filter mean anything.
 
@@ -792,7 +816,10 @@ class TestCurrentShard(TestCase):
 
         from tests.game_typeclasses import ScalingCharacter
 
-        return create_object(ScalingCharacter, key="Rowan")
+        # A real home: Evennia stamps `DEFAULT_HOME` otherwise, and the
+        # dbref it names does not exist in a fresh test database.
+        home = create_object(key="Somewhere")
+        return create_object(ScalingCharacter, key="Rowan", home=home)
 
     def test_sh_01_is_stored_as_an_attribute(self):
         """SH-01: an Attribute survives archiving; a field would not.
@@ -1390,9 +1417,9 @@ class TestHandoff(TestCase):
         ticket = message.send.call_args.kwargs["payload"]
         session, destination, payload = send.call_args.args
         self.assertEqual(destination, "shard0")
-        self.assertEqual(
-            json.loads(payload)[SCALING_TICKET_KEY], ticket["token"]
-        )
+        # A mapping, not a string. Multiplex serialises it, and encoding it
+        # here too lands a JSON string of a JSON string at the far end.
+        self.assertEqual(payload, {SCALING_TICKET_KEY: ticket["token"]})
 
     def test_ho_06_does_not_delete_the_account(self):
         """HO-06: the session is still live and still needs it.
@@ -1948,6 +1975,112 @@ class TestOOCCommand(TestCase):
         self.assertEqual(log.call_args.kwargs["level"], "ERROR")
 
 
+class _LockSession:
+    """A session, reduced to the one field a `cmd` lock check is given."""
+
+    def __init__(self, puppet=None):
+        self.puppet = puppet
+
+
+#: Each override and the lockstring it is meant to carry, written out so a
+#: reader can check them against what Evennia ships.
+_LOCKED = {
+    "ScalingCmdPassword": "cmd:pperm(Player) and is_ooc()",
+    "ScalingCmdQuell": "cmd:pperm(Player) and is_ooc()",
+    "ScalingCmdCharCreate": "cmd:pperm(Player) and is_ooc()",
+    "ScalingCmdCharDelete": "cmd:pperm(Player) and is_ooc()",
+    "ScalingCmdOption": "cmd:is_ooc()",
+    "ScalingCmdStyle": "cmd:is_ooc()",
+    "ScalingCmdIC": "cmd:is_ooc()",
+}
+
+
+class TestOOCLocks(unittest.TestCase):
+    """LK — locking account changes to out of character."""
+
+    def test_lk_01_is_ooc_is_true_without_a_puppet(self):
+        """LK-01: out of character means nothing is being played."""
+        from evennia_scaling.lockfuncs import is_ooc
+
+        self.assertTrue(is_ooc(None, None, session=_LockSession()))
+
+    def test_lk_02_is_ooc_is_false_while_puppeting(self):
+        """LK-02: the whole point — a shard's copy of the account is discarded."""
+        from evennia_scaling.lockfuncs import is_ooc
+
+        self.assertFalse(
+            is_ooc(None, None, session=_LockSession(puppet=object()))
+        )
+
+    def test_lk_03_is_ooc_is_true_without_a_session(self):
+        """LK-03: a check outside a command is not a character standing somewhere.
+
+        Refusing there would fail closed for a caller that never had a
+        session to begin with.
+        """
+        from evennia_scaling.lockfuncs import is_ooc
+
+        self.assertTrue(is_ooc(None, None))
+
+    def test_lk_04_each_override_carries_its_lockstring(self):
+        """LK-04: the whole string, not an appended fragment.
+
+        Written out so it reads against what Evennia ships — a command
+        whose lock declares several access types cannot be extended by
+        appending.
+        """
+        from evennia_scaling import commands
+
+        for name, lockstring in _LOCKED.items():
+            with self.subTest(command=name):
+                self.assertEqual(getattr(commands, name).locks, lockstring)
+
+    def test_lk_05_an_override_changes_nothing_but_the_lock(self):
+        """LK-05: catches a lockstring copied with a clause dropped.
+
+        The subclass adds nothing and removes nothing, so its behaviour is
+        its parent's and only its access changes.
+        """
+        from evennia_scaling import commands
+
+        for name in _LOCKED:
+            with self.subTest(command=name):
+                override = getattr(commands, name)
+                parent = override.__bases__[0]
+                self.assertEqual(override.key, parent.key)
+                self.assertEqual(override.aliases, parent.aliases)
+                # Evennia's command metaclass adds `_keyaliases` and
+                # `help_category` to every subclass, so "defines only
+                # locks" is not assertable. What matters is that no code
+                # changed: the parent's own methods are still the ones
+                # that run.
+                self.assertIs(override.func, parent.func)
+                self.assertIs(override.parse, parent.parse)
+                self.assertNotEqual(override.locks, parent.locks)
+
+    def test_lk_06_ready_points_the_module_attributes_at_the_overrides(self):
+        """LK-06: Evennia's cmdsets read the module attribute, not our module.
+
+        `AccountCmdSet.at_cmdset_creation` calls `account.CmdPassword()`
+        when a session's cmdset is built, so the assignment is what puts
+        ours in front of it without touching Evennia's source.
+        """
+        from django.apps import apps as django_apps
+        from evennia.commands.default import account as account_commands
+
+        from evennia_scaling import commands
+
+        django_apps.get_app_config("evennia_scaling").ready()
+
+        for name in _LOCKED:
+            with self.subTest(command=name):
+                override = getattr(commands, name)
+                installed = getattr(
+                    account_commands, override.__bases__[0].__name__
+                )
+                self.assertIs(installed, override)
+
+
 class _FakeMessage:
     """Stands in for a bus row — the two fields a handler reads."""
 
@@ -2315,3 +2448,231 @@ class TestServerSession(TestCase):
         ), mock.patch("evennia_scaling.sessions.send_session") as sending:
             session.load_sync_data({})
         sending.assert_not_called()
+
+
+@override_settings(
+    MESSAGEBUS_INSTANCE_ID="shard0",
+    # The arrival resolves this for real, so it has to name a typeclass with
+    # a manager behind it rather than the stub startup validation uses.
+    BASE_ACCOUNT_TYPECLASS="tests.game_typeclasses.ScalingAccount",
+)
+class TestArrival(TestCase):
+    """SS — admitting a session that arrived with a ticket.
+
+    A separate class from the rest of `SS`: those exercise the override
+    against a stand-in session, and these need real accounts, characters and
+    an archive to rebuild them from.
+    """
+
+    databases = {"default", "archive", "messagebus"}
+
+    _next = 0
+
+    def setUp(self):
+        from evennia.utils.idmapper.models import flush_cache
+
+        super().setUp()
+        flush_cache()
+
+    def _arriving(self):
+        """An account and character as the sending instance left them."""
+        from evennia.utils.create import create_account
+
+        from tests.game_typeclasses import ScalingAccount
+
+        TestArrival._next += 1
+        name = f"rowan{TestArrival._next}"
+        account = create_account(
+            name,
+            f"{name}@example.com",
+            "testpassword123",
+            typeclass=ScalingAccount,
+        )
+        character, errors = account.create_character(
+            key=f"Char{TestArrival._next}",
+            typeclass="tests.game_typeclasses.ScalingCharacter",
+        )
+        self.assertFalse(errors, errors)
+        return account, character
+
+    def _session(self, token):
+        """A session carrying a token, as multiplex delivers one."""
+        from evennia_portal_multiplex.move import PAYLOAD_KEY
+
+        from evennia_scaling.sessions import (
+            SCALING_TICKET_KEY,
+            make_scaling_session,
+        )
+
+        session = make_scaling_session(_session_base())()
+        session.server_data = {
+            PAYLOAD_KEY: json.dumps({SCALING_TICKET_KEY: token})
+        }
+        return session
+
+    def _ticket_for(self, account, character, to_instance="shard0"):
+        """A stored ticket naming an archived account and character."""
+        from evennia_archive.api import archive
+
+        from evennia_scaling.tickets import create_ticket, store_ticket
+
+        archive(account)
+        archive(character)
+        ticket = create_ticket(
+            str(account.archive_id), str(character.archive_id), to_instance
+        )
+        store_ticket(ticket)
+        return ticket
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ss_11_a_redeemed_ticket_admits_the_session(self):
+        """SS-11: `portal_connect` reads this pair and logs the session in.
+
+        Calling `sessionhandler.login` here would fire every login hook
+        twice; setting `logged_in` also suppresses the login screen.
+        """
+        from unittest import mock
+
+        from evennia.accounts.models import AccountDB
+
+        account, character = self._arriving()
+        username = account.username
+        ticket = self._ticket_for(account, character)
+        session = self._session(ticket["token"])
+
+        with mock.patch("evennia_scaling.handoff.place_in_world"):
+            session.load_sync_data({})
+
+        # Read after: the rebuild deletes and restores, so the object this
+        # test created is gone and its id reads as None.
+        rebuilt = AccountDB.objects.get(username=username)
+        self.assertTrue(session.logged_in)
+        self.assertEqual(session.uid, rebuilt.id)
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ss_12_a_shard_rebuilds_and_places_the_ticketed_character(self):
+        """SS-12: a shard receives exactly one character, the one named.
+
+        Restoring a roster here would put every character on an instance it
+        is not being played on.
+        """
+        from unittest import mock
+
+        account, character = self._arriving()
+        expected = character.archive_id
+        ticket = self._ticket_for(account, character)
+        session = self._session(ticket["token"])
+
+        with mock.patch("evennia_scaling.handoff.place_in_world") as place:
+            session.load_sync_data({})
+
+        placed = place.call_args.args[0]
+        self.assertEqual(placed.archive_id, expected)
+
+    @override_settings(SCALING_ROLE="router")
+    def test_ss_13_a_router_rebuilds_the_roster_and_places_nobody(self):
+        """SS-13: the character-select menu reads live objects.
+
+        And nothing is placed: a character is not standing anywhere on the
+        router, which is not part of the game world.
+        """
+        from unittest import mock
+
+        account, character = self._arriving()
+        ticket = self._ticket_for(account, character)
+        session = self._session(ticket["token"])
+
+        with mock.patch(
+            "evennia_scaling.handoff.place_in_world"
+        ) as place, mock.patch.object(
+            type(account), "restore_characters"
+        ) as roster:
+            session.load_sync_data({})
+
+        roster.assert_called_once()
+        place.assert_not_called()
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ss_14_the_character_becomes_last_puppet(self):
+        """SS-14: the reference the archive drops, put back.
+
+        `at_post_login` reads it to auto-puppet, and a bare `ic` resolves
+        through it. Without it Evennia says the character does not exist —
+        which it does, just not under the key the restored account
+        remembers.
+        """
+        from unittest import mock
+
+        from evennia.accounts.models import AccountDB
+
+        account, character = self._arriving()
+        expected = character.archive_id
+        ticket = self._ticket_for(account, character)
+        session = self._session(ticket["token"])
+
+        with mock.patch("evennia_scaling.handoff.place_in_world"):
+            session.load_sync_data({})
+
+        rebuilt = AccountDB.objects.get(pk=session.uid)
+        self.assertEqual(rebuilt.db._last_puppet.archive_id, expected)
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ss_15_an_unarchived_account_is_not_admitted(self):
+        """SS-15: the ticket promised an account the archive does not hold.
+
+        Admitting a session without one is a session `portal_connect` drops
+        back to a login screen, on an instance that should never show one —
+        so it is not admitted at all, and the bounce sends it home.
+        """
+        from unittest import mock
+
+        from evennia_scaling.tickets import create_ticket, store_ticket
+
+        ticket = create_ticket(
+            "8b1f0000-0000-4000-8000-000000000000",
+            "8b1f0000-0000-4000-8000-000000000001",
+            "shard0",
+        )
+        store_ticket(ticket)
+        session = self._session(ticket["token"])
+
+        with mock.patch(
+            "evennia_scaling.handoff.scaling_log"
+        ) as log, mock.patch(
+            "evennia_scaling.sessions.send_session"
+        ) as sending:
+            session.load_sync_data({})
+
+        self.assertFalse(session.logged_in)
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+        sending.assert_called_once()
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ss_16_a_character_that_cannot_be_placed_is_not_admitted(self):
+        """SS-16: nothing raises this yet, and the handling is the point.
+
+        When the real placement lands it will, and the arrival already
+        treats it as a session it cannot admit.
+        """
+        from unittest import mock
+
+        from evennia_scaling.handoff import PlacementFailed
+
+        account, character = self._arriving()
+        ticket = self._ticket_for(account, character)
+        session = self._session(ticket["token"])
+
+        with mock.patch(
+            "evennia_scaling.handoff.place_in_world",
+            side_effect=PlacementFailed("no such room"),
+        ), mock.patch(
+            "evennia_scaling.handoff.scaling_log"
+        ) as log, mock.patch(
+            "evennia_scaling.sessions.send_session"
+        ) as sending:
+            session.load_sync_data({})
+
+        self.assertFalse(session.logged_in)
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+        sending.assert_called_once()
+

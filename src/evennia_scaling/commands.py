@@ -9,10 +9,87 @@ destructive there would fire on a dropped connection.
 See docs/test-plan.md § OC.
 """
 
-from evennia.commands.default.account import CmdOOC
-
+from evennia.commands.default.account import (
+    CmdCharCreate,
+    CmdCharDelete,
+    CmdIC,
+    CmdOOC,
+    CmdOption,
+    CmdPassword,
+    CmdQuell,
+    CmdStyle,
+)
 from .config import ROLE_SHARD, get_role, get_router_id
 from .log import scaling_log
+
+#: Each override below carries its **whole** lockstring rather than an
+#: appended fragment, so it can be read against what Evennia ships.
+#: `ScalingCmdChannel` is why: its lock declares four access types, and
+#: ``is_ooc()`` belongs only in the ``cmd:`` clause.
+#:
+#: These are restrictions Evennia does not have. `ic` while puppeted is a
+#: supported flow there — it switches characters — and `quell` resets the
+#: puppet's lock cache precisely so it works in character.
+#:
+#: Nothing else is changed. Permissions stay as Evennia set them.
+
+
+class ScalingCmdPassword(CmdPassword):
+    """A password change made on a shard is written to a copy that is discarded."""
+
+    locks = "cmd:pperm(Player) and is_ooc()"
+
+
+class ScalingCmdOption(CmdOption):
+    """Protocol and display settings live on the account."""
+
+    locks = "cmd:is_ooc()"
+
+
+class ScalingCmdStyle(CmdStyle):
+    """Display options, through the account's option handler.
+
+    Evennia gives this no lock of its own, so this replaces the inherited
+    ``cmd:all()`` rather than narrowing a stated one.
+    """
+
+    locks = "cmd:is_ooc()"
+
+
+class ScalingCmdQuell(CmdQuell):
+    """A permission mode stored as an account attribute."""
+
+    locks = "cmd:pperm(Player) and is_ooc()"
+
+
+class ScalingCmdCharCreate(CmdCharCreate):
+    """A character created on a shard is created in that shard's database."""
+
+    locks = "cmd:pperm(Player) and is_ooc()"
+
+
+class ScalingCmdCharDelete(CmdCharDelete):
+    """Deleting from a working copy's roster leaves the character elsewhere."""
+
+    locks = "cmd:pperm(Player) and is_ooc()"
+
+
+class ScalingCmdIC(CmdIC):
+    """Going in character is a router operation.
+
+    Not about state — its `_last_puppet` write is disposable — but `ic
+    <other>` while already playing on a shard is a thing that should not be
+    possible here at all.
+    """
+
+    locks = "cmd:is_ooc()"
+
+
+# `ScalingCmdChannel` is not here yet. `evennia.commands.default.comms`
+# imports `evmenu`, which builds a class from Evennia's lazy `Command`
+# export — not populated until `evennia._init()` runs *after*
+# `django.setup()`. So it cannot be imported from `AppConfig.ready()`, and
+# the channel override needs an install point later in the boot.
 
 
 class ScalingCmdOOC(CmdOOC):
