@@ -48,8 +48,8 @@ nature, and the character it makes has never been played, so there is nothing on
 with it.
 
 That leaves one thing this rule depends on: a new character has to reach the archive before it can be
-sent anywhere, because leaving the router does not archive it
-[TBD — needs discussion: character creation is not built yet].
+sent anywhere, because leaving the router does not archive it. `evennia-archive` stores an account and
+a character at the hook that mints their identity, so it is there from the moment it exists.
 
 ## What it does not cover
 

@@ -177,6 +177,12 @@ def reconstitute_for_ticket(session, ticket):
     happens next: a shard is where the character is played, so it is placed
     in the world and stamped as what to puppet, and a router is neither of
     those things.
+
+    **Three failures, three returns.** An account the archive does not
+    hold, a character it does not hold, and a character that cannot be
+    placed. Each is a session this instance will not admit, and none of
+    them raises out through `load_sync_data` into AMP — where a player
+    sees nothing at all rather than being sent home with a message.
     """
     from evennia_archive.api import NotArchived
 
@@ -192,7 +198,15 @@ def reconstitute_for_ticket(session, ticket):
         )
         return None
 
-    character = character_for_ticket(ticket, account)
+    try:
+        character = character_for_ticket(ticket, account)
+    except NotArchived:
+        scaling_log(
+            f"ticket named character {ticket['character_archive_id']}, "
+            f"which is not in the archive. The session cannot be admitted.",
+            level="ERROR",
+        )
+        return None
 
     if get_role() != ROLE_SHARD:
         return account

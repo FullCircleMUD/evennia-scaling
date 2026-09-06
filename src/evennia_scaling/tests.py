@@ -1361,16 +1361,19 @@ class TestHandoff(TestCase):
         self.assertEqual(log.call_args.kwargs["level"], "ERROR")
         msg.assert_called_once()
 
-    def _archived(self):
-        """Every archive id the archive currently holds."""
-        from evennia_archive.models import ArchiveRecord
+    def _archived_by_the_transfer(self, account, character, **kwargs):
+        """What the transfer itself archived, as a list of objects.
 
-        return {
-            str(pk)
-            for pk in ArchiveRecord.objects.using("archive").values_list(
-                "pk", flat=True
-            )
-        }
+        The call rather than the archive's contents: `evennia-archive`
+        stores an account and a character when they are created, so
+        everything the fixture builds is already in there and presence
+        proves nothing about what this function did.
+        """
+        from unittest import mock
+
+        with mock.patch("evennia_archive.api.archive") as archiving:
+            self._transfer(account, character, **kwargs)
+        return [call.args[0] for call in archiving.call_args_list]
 
     def test_ho_01_leaving_the_router_archives_the_account(self):
         """HO-01: the router is the only place an account can change.
@@ -1383,11 +1386,10 @@ class TestHandoff(TestCase):
         was last stored, so there is nothing newer to write.
         """
         account, character = self._playing()
-        self._transfer(account, character)
 
-        archived = self._archived()
-        self.assertIn(str(account.archive_id), archived)
-        self.assertNotIn(str(character.archive_id), archived)
+        archived = self._archived_by_the_transfer(account, character)
+
+        self.assertEqual(archived, [account])
 
     @override_settings(SCALING_ROLE="shard")
     def test_ho_15_leaving_a_shard_archives_the_character(self):
@@ -1403,11 +1405,12 @@ class TestHandoff(TestCase):
         destination exercises it.
         """
         account, character = self._playing()
-        self._transfer(account, character, to_instance="shard1")
 
-        archived = self._archived()
-        self.assertIn(str(character.archive_id), archived)
-        self.assertNotIn(str(account.archive_id), archived)
+        archived = self._archived_by_the_transfer(
+            account, character, to_instance="shard1"
+        )
+
+        self.assertEqual(archived, [character])
 
     def test_ho_16_a_superuser_is_refused(self):
         """HO-16: a superuser belongs to one instance and stays there.
@@ -1424,13 +1427,14 @@ class TestHandoff(TestCase):
         account.save()
         account.msg = mock.Mock()
 
-        returned, send, delay, _ = self._transfer(account, character)
+        with mock.patch("evennia_archive.api.archive") as archiving:
+            returned, send, delay, _ = self._transfer(account, character)
 
         self.assertIsNone(returned)
         send.assert_not_called()
         delay.assert_not_called()
         account.msg.assert_called_once()
-        self.assertEqual(self._archived(), set())
+        archiving.assert_not_called()
 
     def test_ho_02_mints_a_ticket_naming_both_and_the_destination(self):
         """HO-02: the destination has to know who is arriving.
@@ -3059,6 +3063,41 @@ class TestArrival(TestCase):
             str(restored.archive_id), ticket["character_archive_id"]
         )
         self.assertIn(restored, account.characters.all())
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ss_23_an_unarchived_character_is_not_admitted(self):
+        """SS-23: the mirror of SS-15, for the other half of the ticket.
+
+        Without it this raises out through `load_sync_data` and into AMP,
+        where the player sees nothing at all rather than being sent home
+        with a message.
+        """
+        from unittest import mock
+
+        from evennia_archive.api import archive
+
+        from evennia_scaling.tickets import create_ticket, store_ticket
+
+        account, _ = self._arriving()
+        archive(account)
+        ticket = create_ticket(
+            str(account.archive_id),
+            "8b1f0000-0000-4000-8000-000000000001",
+            "shard0",
+        )
+        store_ticket(ticket)
+        session = self._session(ticket["token"])
+
+        with mock.patch(
+            "evennia_scaling.handoff.scaling_log"
+        ) as log, mock.patch(
+            "evennia_scaling.sessions.send_session"
+        ) as sending:
+            session.load_sync_data({})
+
+        self.assertFalse(session.logged_in)
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+        sending.assert_called_once()
 
     @override_settings(SCALING_ROLE="router")
     def test_ss_21_a_router_brings_the_character_back(self):

@@ -472,9 +472,9 @@ router and shard to shard archive the character.
 Archiving the other one would be worse than wasted. A shard's account is a working copy, and writing it
 back over the authoritative one could only ever carry a change that should not have been possible.
 
-This rests on a character being in the archive before it can be sent anywhere
-[TBD — needs discussion: chargen archives a new character, so leaving the router has nothing newer to
-store. Not built — character creation has not been done yet].
+This rests on a character being in the archive before it can be sent anywhere, which
+`evennia-archive` guarantees: it stores an account and a character at the hook that mints their
+identity, so leaving the router has nothing newer to write.
 
 **Archived here** rather than when the session closes, because the destination rebuilds on arrival
 while the departing instance is still tearing its session down.
@@ -850,6 +850,11 @@ on the instance it left, so the roster names something that is gone and the rest
 primary key. No other character is touched: they were never deleted, and a character only changes on
 the shard it is played on.
 
+**Three failures, three `return None`.** An account the archive does not hold, a character it does not
+hold, and a character that cannot be placed. Each is a session this instance will not admit, and the
+caller's existing bounce is what happens next — so none of them adds a branch, and none of them raises
+out through `load_sync_data` into AMP, where a player sees nothing at all.
+
 **`_last_puppet` is the reference the archive drops.** `at_post_login` reads it to auto-puppet, and a
 bare `ic` resolves through it. Without it Evennia says the character does not exist — which it does,
 just not under the primary key the restored account remembers. This is the only place both objects are
@@ -893,6 +898,7 @@ character, and its failure is handled.
 | SS-20 | `character_for_ticket` restores the character the ticket names and adds it to the roster | test_ss_20_the_ticketed_character_joins_the_roster |
 | SS-21 | On a router, the character the ticket names comes back and is on the account's roster | test_ss_21_a_router_brings_the_character_back |
 | SS-22 | On a router, `_last_puppet` is not set — nothing is puppeted there | test_ss_22_a_router_sets_no_last_puppet |
+| SS-23 | A character the archive does not hold leaves the session unadmitted, logged | test_ss_23_an_unarchived_character_is_not_admitted |
 
 ### TK — tickets
 

@@ -2,6 +2,27 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-06 — a ticket that names nothing is refused, not raised
+
+155 tests.
+
+Found by running the round trip on a fresh database: `ic` produced no response at all, and shard0's log
+had a `NotArchived` coming out through AMP. The character had never been archived — leaving the router
+archives the account alone, which assumed a character reaches the archive when it is created. It did
+not.
+
+- **`evennia-archive` now archives an account and a character at creation**, which is what that
+  assumption needed. That is its change, not this library's, but this is what depends on it.
+- **`reconstitute_for_ticket` catches `NotArchived` for the character too.** The account's was caught
+  and the character's was not, so the same failure either bounced the session home with a message or
+  broke the connection, depending on which half of the ticket was missing. Three failures, three
+  returns. Case `SS-23`.
+
+`HO-01`, `HO-15` and `HO-16` were rewritten with it. They asserted what the archive *held*, which stops
+meaning anything once creating an account or a character puts it there — so they now assert what
+`transfer_to_instance` archived, by watching the call. A better assertion in any case: it says what the
+function did rather than what happened to end up in a table.
+
 ## 2026-09-05 — one place each thing can change
 
 154 tests. A transfer works end to end in both directions, and the rule behind it is written down:
