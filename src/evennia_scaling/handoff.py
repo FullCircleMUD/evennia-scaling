@@ -296,17 +296,20 @@ def transfer_to_instance(account, session, character, to_instance):
     destination differs. A game moving a character between shards calls
     this too, so the path a consumer uses is the path the library uses.
 
-    Returns multiplex's Deferred of ``(moved, outcome)``, or ``None`` for a
-    superuser, who is refused. A destination that is down refuses the move,
-    and a caller that swallows that leaves a player who asked to go in
-    character seeing nothing at all.
+    Returns multiplex's Deferred of ``(moved, outcome)``, or ``None`` for
+    account ``#1``, which is refused. A destination that is down refuses
+    the move, and a caller that swallows that leaves a player who asked to
+    go in character seeing nothing at all.
 
-    **A superuser is refused outright.** A superuser belongs to one
-    instance and stays there — never transferred, never archived, never
+    **Account ``#1`` is refused outright.** It belongs to the instance it
+    was made on and stays there — never transferred, never archived, never
     restored, never deleted. Both of this library's own triggers already
-    step aside for one, so this is for a consumer calling here directly,
+    step aside for it, so this is for a consumer calling here directly,
     which the shard-to-shard case invites. They are told, because a
     consumer who wrote that call meant something by it.
+
+    A superuser that is not ``#1`` travels like any other account. See
+    `is_instance_root`.
 
     Five steps, in this order:
 
@@ -344,15 +347,16 @@ def transfer_to_instance(account, session, character, to_instance):
     from evennia_archive.api import archive
 
     from .config import ROLE_ROUTER, get_role
+    from .mixins import is_instance_root
 
-    if account.is_superuser:
+    if is_instance_root(account):
         scaling_log(
-            f"{account} is a superuser and was asked to transfer to "
+            f"{account} is this instance's #1 and was asked to transfer to "
             f"{to_instance}. Refused.",
             level="ERROR",
         )
         account.msg(
-            "Superusers are local to their instance and cannot be "
+            "This account belongs to this instance and cannot be "
             "transferred."
         )
         return None

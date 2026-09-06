@@ -120,10 +120,11 @@ class ScalingCmdNick(CmdNick):
 class ScalingCmdOOC(CmdOOC):
     """Leave the shard rather than standing about on it out of character.
 
-    A total override — `super().func()` is never called except for a
-    superuser. Evennia's ends by rendering the character-select menu, which
-    is the one screen a shard must not show: a shard holds one character
-    and no roster, so a menu there offers a choice that does not exist.
+    A total override — `super().func()` is never called except for the
+    instance's own `#1`. Evennia's ends by rendering the character-select
+    menu, which is the one screen a shard must not show: a shard holds one
+    character and no roster, so a menu there offers a choice that does not
+    exist.
     Nothing else in it is worth inheriting — `account.get_puppet(session)`
     is the whole of what going out of character needs to resolve.
 
@@ -136,6 +137,7 @@ class ScalingCmdOOC(CmdOOC):
 
     def func(self):
         from .handoff import move_session, transfer_to_instance
+        from .mixins import is_instance_root
 
         account = self.account
         session = self.session
@@ -144,11 +146,11 @@ class ScalingCmdOOC(CmdOOC):
         # covers both halves of them: unpuppet and render the menu, or say
         # they are already out of character.
         #
-        # A superuser stays on the instance it belongs to — without this it
-        # would be archived, its character deleted, and it would land on the
-        # router. And a router is where out of character happens, so there
-        # is nothing here to improve on.
-        if account.is_superuser or get_role() != ROLE_SHARD:
+        # #1 stays on the instance it belongs to — without this it would
+        # be archived, its character deleted, and it would land on a router
+        # where its account does not exist. And a router is where out of
+        # character happens, so there is nothing here to improve on.
+        if is_instance_root(account) or get_role() != ROLE_SHARD:
             return super().func()
 
         # Read before the unpuppet, which clears session.puppet.

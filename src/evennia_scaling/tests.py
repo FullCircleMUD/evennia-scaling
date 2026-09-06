@@ -602,12 +602,12 @@ class TestAccountMixin(TestCase):
         self.assertEqual(returned.pk, account.pk)
         self.assertTrue(AccountDB.objects.filter(pk=account.pk).exists())
 
-    def test_ac_09_a_superuser_is_not_refreshed(self):
-        """AC-09: rebuilding one takes an operator's way in with it.
+    def test_ac_09_account_one_is_not_refreshed(self):
+        """AC-09: rebuilding it takes an operator's way in with it.
 
-        Evennia expects #1 to be there. Archived and refreshed like any
-        other account, a superuser would be deleted and restored — and a
-        restore that renamed it on collision would lock the operator out.
+        Evennia expects #1 on every instance. Refreshed like any other
+        account it would be deleted and restored — and a restore that
+        renamed it on collision would lock the operator out.
         """
         from evennia.accounts.models import AccountDB
         from evennia_archive.api import archive
@@ -615,14 +615,40 @@ class TestAccountMixin(TestCase):
         from tests.game_typeclasses import ScalingAccount
 
         account = self._account()
-        account.is_superuser = True
-        account.save()
         archive(account)
         pk = account.pk
 
-        self.assertIsNone(ScalingAccount.refresh_from_archive(account.username))
+        with _as_account_one(account):
+            self.assertIsNone(
+                ScalingAccount.refresh_from_archive(account.username)
+            )
+
         # The same row, not a rebuilt one: a restore mints a new primary key.
         self.assertTrue(AccountDB.objects.filter(pk=pk).exists())
+
+    def test_ac_19_the_instance_root_is_both_halves(self):
+        """AC-19: neither half names it alone.
+
+        `is_superuser` on its own catches a second privileged account,
+        which is the one a game wants to be able to move. `pk == 1` on its
+        own catches whatever is first in a database where Evennia's
+        initial setup never ran.
+        """
+        from unittest import mock
+
+        from evennia_scaling.mixins import is_instance_root
+
+        account = self._account()
+
+        with mock.patch.object(type(account), "pk", 1):
+            account.is_superuser = True
+            self.assertTrue(is_instance_root(account))
+            account.is_superuser = False
+            self.assertFalse(is_instance_root(account))
+
+        with mock.patch.object(type(account), "pk", 2):
+            account.is_superuser = True
+            self.assertFalse(is_instance_root(account))
 
     def test_ac_10_a_live_account_is_left_where_it_is(self):
         """AC-10: the router's copy is the authoritative one.
@@ -1179,6 +1205,35 @@ class _PlayingSession:
         self.puppet = puppet
 
 
+def _as_account_one(account=None):
+    """Make the guards see this instance's root account.
+
+    The predicate is patched rather than the account. Faking the primary
+    key on the model class breaks anything that then touches the database
+    — and a test database never runs Evennia's initial setup, so an
+    ordinary account here can hold ``pk 1`` without being anything
+    special. `AC-19` covers the predicate itself.
+    """
+    from unittest import mock
+
+    return mock.patch(
+        "evennia_scaling.mixins.is_instance_root", return_value=True
+    )
+
+
+def _as_another_account(account=None):
+    """Make the guards see an ordinary account.
+
+    Stated rather than assumed, for the same reason: a fixture account may
+    hold ``pk 1`` by accident.
+    """
+    from unittest import mock
+
+    return mock.patch(
+        "evennia_scaling.mixins.is_instance_root", return_value=False
+    )
+
+
 class TestHandoff(TestCase):
     """HO — sending a session and what it plays to another instance."""
 
@@ -1412,8 +1467,8 @@ class TestHandoff(TestCase):
 
         self.assertEqual(archived, [character])
 
-    def test_ho_16_a_superuser_is_refused(self):
-        """HO-16: a superuser belongs to one instance and stays there.
+    def test_ho_16_account_one_is_refused(self):
+        """HO-16: #1 belongs to the instance it was made on.
 
         Both of the library's own triggers already step aside for one, so
         this is for a consumer calling `transfer_to_instance` directly —
@@ -1423,11 +1478,11 @@ class TestHandoff(TestCase):
         from unittest import mock
 
         account, character = self._playing()
-        account.is_superuser = True
-        account.save()
         account.msg = mock.Mock()
 
-        with mock.patch("evennia_archive.api.archive") as archiving:
+        with _as_account_one(account), mock.patch(
+            "evennia_archive.api.archive"
+        ) as archiving:
             returned, send, delay, _ = self._transfer(account, character)
 
         self.assertIsNone(returned)
@@ -1435,6 +1490,24 @@ class TestHandoff(TestCase):
         delay.assert_not_called()
         account.msg.assert_called_once()
         archiving.assert_not_called()
+
+    def test_ho_17_another_superuser_transfers(self):
+        """HO-17: the primary key is the rule, not superuser-ness.
+
+        A second superuser is not what Evennia requires be present and
+        collides with nothing, so it travels like any other account —
+        which is what lets a game have a privileged account that can
+        reach a shard.
+        """
+        account, character = self._playing()
+        account.is_superuser = True
+        account.save()
+
+        with _as_another_account(account):
+            returned, send, _, _ = self._transfer(account, character)
+
+        self.assertIsNotNone(returned)
+        send.assert_called_once()
 
     def test_ho_02_mints_a_ticket_naming_both_and_the_destination(self):
         """HO-02: the destination has to know who is arriving.
@@ -1652,17 +1725,16 @@ class TestGoingInCharacter(TestCase):
                 account.puppet_object(None, character)
 
     @override_settings(SCALING_ROLE="router")
-    def test_ic_06_a_superuser_puppets_normally(self):
-        """IC-06: a superuser belongs to the instance it was made on.
+    def test_ic_06_account_one_puppets_normally(self):
+        """IC-06: #1 belongs to the instance it was made on.
 
-        Transferring one archives and deletes an account the instance
-        needs, and Evennia expects #1 to be there.
+        Transferring it archives and deletes an account the instance
+        needs, and Evennia expects one on every instance.
         """
         account, character = self._playing()
-        account.is_superuser = True
-        account.save()
 
-        transfer, evennias = self._puppet(account, character)
+        with _as_account_one(account):
+            transfer, evennias = self._puppet(account, character)
 
         evennias.assert_called_once()
         transfer.assert_not_called()
@@ -1787,16 +1859,17 @@ class TestGoingOutOfCharacter(TestCase):
         self.assertIn(character.archive_id, message)
 
     @override_settings(SCALING_ROLE="shard")
-    def test_oc_05_a_superuser_is_not_archived(self):
+    def test_oc_05_account_one_is_not_archived(self):
         """OC-05: it does not travel, so a copy could only overwrite.
 
         The one the instance depends on is the one it would overwrite.
         """
         account, character = self._playing()
-        account.is_superuser = True
-        account.save()
 
-        archive, _ = self._unpuppet(account, _PlayingSession(puppet=character))
+        with _as_account_one(account):
+            archive, _ = self._unpuppet(
+                account, _PlayingSession(puppet=character)
+            )
 
         archive.assert_not_called()
 
@@ -1823,18 +1896,19 @@ class TestGoingOutOfCharacter(TestCase):
         self.assertIn(second, archived)
 
     @override_settings(SCALING_ROLE="router")
-    def test_oc_08_a_superuser_on_the_router_is_not_a_breach(self):
-        """OC-08: superusers do puppet on the router.
+    def test_oc_08_account_one_on_the_router_is_not_a_breach(self):
+        """OC-08: #1 does puppet on the router.
 
-        Reporting them would bury the real thing under routine noise. The
+        Reporting it would bury the real thing under routine noise. The
         archive skip runs before the breach check, and that ordering is
         what makes this true.
         """
         account, character = self._playing()
-        account.is_superuser = True
-        account.save()
 
-        _, log = self._unpuppet(account, _PlayingSession(puppet=character))
+        with _as_account_one(account):
+            _, log = self._unpuppet(
+                account, _PlayingSession(puppet=character)
+            )
 
         log.assert_not_called()
 
@@ -1999,17 +2073,16 @@ class TestOOCCommand(TestCase):
         self.assertIs(account_commands.CmdOOC, ScalingCmdOOC)
 
     @override_settings(SCALING_ROLE="shard")
-    def test_oc_16_a_superuser_goes_ooc_where_it_stands(self):
-        """OC-16: a superuser belongs to the instance it was made on.
+    def test_oc_16_account_one_goes_ooc_where_it_stands(self):
+        """OC-16: #1 belongs to the instance it was made on.
 
         Without this it would be archived, its character deleted, and it
-        would land on the router.
+        would land on the router — where its account does not exist.
         """
         account, _ = self._playing()
-        account.is_superuser = True
-        account.save()
 
-        transfer, _, _, evennias, _, _ = self._ooc(account)
+        with _as_account_one(account):
+            transfer, _, _, evennias, _, _ = self._ooc(account)
 
         evennias.assert_called_once()
         transfer.assert_not_called()

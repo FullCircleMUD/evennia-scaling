@@ -167,6 +167,22 @@ class ScalingCharacterMixin(ArchivableCharacterMixin):
         return self.current_shard
 
 
+def is_instance_root(account):
+    """Whether this is the account Evennia requires the instance to have.
+
+    The one its initial setup creates at first boot and expects to find
+    thereafter. Restoring a copy anywhere would displace the local one, so
+    it never travels, is never archived, and is never rebuilt.
+
+    **Both halves, because neither names it alone.** ``is_superuser`` on
+    its own catches a second privileged account, which is exactly the one
+    a game wants to be able to move between instances. ``pk == 1`` on its
+    own catches whatever happens to be first in a database where initial
+    setup never ran — a test database, for one.
+    """
+    return account.pk == 1 and account.is_superuser
+
+
 class ScalingAccountMixin(ArchivableAccountMixin):
     """Finds an account in the archive.
 
@@ -296,11 +312,11 @@ class ScalingAccountMixin(ArchivableAccountMixin):
         the ticket door, so their character is still only in the archive.
         This is where that is noticed.
 
-        **A superuser is never restored.** Evennia expects ``#1`` to be
-        there, and replacing it with an archived copy takes an operator's
-        way in with it.
+        **Account ``#1`` is never restored.** Evennia expects one on every
+        instance, and replacing it with an archived copy takes an
+        operator's way in with it.
 
-        The superuser lookup is ``filter(username=identifier)``, which is a
+        The ``#1`` lookup is ``filter(username=identifier)``, which is a
         second tie to the username and is *not* a seam. A consumer who
         overrides `find_in_archive` to identify accounts some other way must
         override this method too — otherwise the guard is handed something
@@ -313,7 +329,7 @@ class ScalingAccountMixin(ArchivableAccountMixin):
 
         account = cls.objects.filter(username=identifier).first()
 
-        if account is not None and account.is_superuser:
+        if account is not None and is_instance_root(account):
             return None
 
         if account is None:
@@ -405,12 +421,13 @@ class ScalingAccountMixin(ArchivableAccountMixin):
         if not characters:
             return
 
-        # Nothing about a superuser is archived: it does not travel, so an
+        # Nothing about #1 is archived: it does not travel, so an
         # archived copy could only ever overwrite the one the instance
         # depends on. Before the breach check below, and deliberately —
-        # superusers do puppet on the router, so reporting them would bury
-        # the real thing under routine noise.
-        if self.is_superuser:
+        # #1 does puppet on the router, so reporting it would bury the real
+        # thing under routine noise. Any other account puppeting there is a
+        # breach, a second superuser included: one travels like anybody.
+        if is_instance_root(self):
             return
 
         if get_role() == ROLE_ROUTER:
@@ -457,10 +474,10 @@ class ScalingAccountMixin(ArchivableAccountMixin):
         from .config import ROLE_ROUTER, get_role
         from .handoff import transfer_to_instance
 
-        # A superuser stays where it is, so it puppets normally even on a
-        # router. Transferring one would archive and delete an account the
-        # instance needs.
-        if self.is_superuser or get_role() != ROLE_ROUTER:
+        # #1 stays where it is, so it puppets normally even on a router.
+        # Transferring it would archive and delete an account the instance
+        # needs.
+        if is_instance_root(self) or get_role() != ROLE_ROUTER:
             return super().puppet_object(session, obj)
 
         if not obj:

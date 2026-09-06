@@ -38,8 +38,13 @@ the archive.
 state. Seven are locked; `channel` and `nick` keep working in character with the parts that write to
 the account held back. See [commands.md](commands.md).
 
-**A superuser never moves.** It belongs to one instance — never transferred, never archived, never
-restored, never deleted.
+**This instance's `#1` never moves.** Evennia requires one on every instance and makes it at first
+boot, so it belongs where it was made — never transferred, never archived, never restored, never
+deleted.
+
+It is identified by both halves: `#1` **and** a superuser. `is_superuser` alone would catch a second
+privileged account, which is exactly the one a game wants to be able to move between instances; `pk ==
+1` alone would catch whatever is first in a database where initial setup never ran.
 
 ## The exception
 

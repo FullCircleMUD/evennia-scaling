@@ -2,6 +2,29 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-06 — the rule was never "no superusers"
+
+157 tests.
+
+**Every guard that read `is_superuser` now asks `is_instance_root`.** The constraint was always account
+`#1`: Evennia requires one on every instance and makes it at first boot, and restoring a copy anywhere
+would displace the local one. Superuser-ness was standing in for that, and it excluded something a game
+has a use for — a privileged account that can reach a shard. Seven guards, in `refresh_from_archive`,
+`puppet_object`, `unpuppet_object`, `transfer_to_instance` and `ScalingCmdOOC`.
+
+**The predicate is both halves**, `pk == 1` and `is_superuser`, and neither names the account alone.
+`is_superuser` catches the travelling privileged account; `pk == 1` catches whatever is first in a
+database where initial setup never ran, which is every test database. `AC-19` covers the rule and every
+other case patches it, because faking a primary key on the model class breaks anything that then
+touches the database.
+
+One behaviour changed rather than moved: a superuser that is not `#1`, found puppeting on the router,
+is now logged as an invariant breach. It travels like anybody, so finding it there means what it means
+for anybody.
+
+Prompted by `evennia-archive` hitting the same thing from the other side — see its entry for the same
+date.
+
 ## 2026-09-06 — a ticket that names nothing is refused, not raised
 
 155 tests.

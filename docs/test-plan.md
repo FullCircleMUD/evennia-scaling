@@ -203,9 +203,9 @@ resolves it on every request.
 Only an account that is *absent* is restored, which is a router whose database was rebuilt. No delete,
 because there is nothing there to delete.
 
-It adds one decision to that lookup: **a superuser is never restored.** Evennia expects `#1` to be
-there, and replacing it with an archived copy takes an operator's way in with it. The guard runs first,
-and its local lookup is `filter(username=identifier)`.
+It adds one decision to that lookup: **account `#1` is never restored.** Evennia expects one on every
+instance, and replacing it with an archived copy takes an operator's way in with it. The guard runs
+first, and its local lookup is `filter(username=identifier)`.
 
 **It restores the roster on both paths.** For a restored account that is the obvious half — its
 characters are absent too. For an account that was already here it is the *stranded character* case: a
@@ -267,7 +267,7 @@ also fires `at_post_add_character`.
 | AC-06 | Rebuilding an account deletes its local characters, so nothing stale survives it | test_ac_06_the_accounts_local_characters_go_with_it |
 | AC-07 | An account that is absent locally is restored from its username | test_ac_07_an_absent_account_is_restored_by_username |
 | AC-08 | A username with nothing archived is left alone | test_ac_08_an_unarchived_username_is_left_alone |
-| AC-09 | A superuser is not restored, even with an archived copy | test_ac_09_a_superuser_is_not_refreshed |
+| AC-09 | Account `#1` is not restored, even with an archived copy | test_ac_09_account_one_is_not_refreshed |
 | AC-10 | An account that is already here is returned untouched — its primary key does not move | test_ac_10_a_live_account_is_left_where_it_is |
 | AC-11 | The return value is Evennia's, unchanged | test_ac_11_the_return_value_is_evennias |
 | AC-12 | An account with nothing archived still authenticates | test_ac_12_an_unarchived_account_still_authenticates |
@@ -277,6 +277,7 @@ also fires `at_post_add_character`.
 | AC-16 | Characters owned by a different account are not restored | test_ac_16_another_accounts_characters_are_left_alone |
 | AC-17 | A restored account gets its characters back with it | test_ac_17_a_restored_account_gets_its_characters |
 | AC-18 | An account that was already here gets any stranded character back at login | test_ac_18_a_stranded_character_comes_back_at_login |
+| AC-19 | The instance root is `#1` **and** a superuser — neither half names it alone | test_ac_19_the_instance_root_is_both_halves |
 
 ### SH — where a character is in the game world
 
@@ -479,11 +480,22 @@ identity, so leaving the router has nothing newer to write.
 **Archived here** rather than when the session closes, because the destination rebuilds on arrival
 while the departing instance is still tearing its session down.
 
-**A superuser is refused outright.** A superuser belongs to one instance and stays there — never
-transferred, never archived, never restored, never deleted. Both of the library's own triggers already
-step aside for one, so this refusal is for a consumer calling this directly, which the shard-to-shard
-case invites. It says so rather than failing quietly, because a consumer who wrote that call meant
-something by it.
+**Account `#1` is refused outright.** It belongs to the instance it was made on and stays there —
+never transferred, never archived, never restored, never deleted. Both of the library's own triggers
+already step aside for it, so this refusal is for a consumer calling this directly, which the
+shard-to-shard case invites. It says so rather than failing quietly, because a consumer who wrote that
+call meant something by it.
+
+**The instance root is `#1` and a superuser, and neither half names it alone.** `is_superuser` on its
+own catches a second privileged account, which is exactly the one a game wants to be able to move
+between instances — `HO-17` pins that. `pk == 1` on its own catches whatever happens to be first in a
+database where Evennia's initial setup never ran, which is every test database. Together they name the
+account that setup creates and requires. `is_instance_root` is the one place it is decided, and `AC-19`
+covers it.
+
+Every other case patches that predicate rather than faking a primary key. Faking one on the model class
+breaks anything that then touches the database, and it would be asserting the predicate again in each
+place instead of the guard that calls it.
 
 **The character is deleted after the ticket is sent.** A failure at the handoff then leaves the
 character out of this database but present in the archive, with a live ticket already waiting — so a
@@ -535,7 +547,8 @@ The Deferred is still returned, so a caller can chain onto it. Nothing has to.
 |---|---|---|
 | HO-01 | Leaving the router archives the account and not the character | test_ho_01_leaving_the_router_archives_the_account |
 | HO-15 | Leaving a shard archives the character and not the account | test_ho_15_leaving_a_shard_archives_the_character |
-| HO-16 | A superuser is refused: nothing archived, no ticket, no move, and they are told why | test_ho_16_a_superuser_is_refused |
+| HO-16 | Account `#1` is refused: nothing archived, no ticket, no move, and they are told why | test_ho_16_account_one_is_refused |
+| HO-17 | A superuser that is not `#1` transfers like any other account | test_ho_17_another_superuser_transfers |
 | HO-02 | The ticket names both archive ids and the destination | test_ho_02_mints_a_ticket_naming_both_and_the_destination |
 | HO-03 | The ticket is sent to the destination over the bus | test_ho_03_sends_the_ticket_over_the_bus |
 | HO-04 | The character's deletion is deferred to the reactor, not done inline | test_ho_04_defers_the_character_delete |
@@ -589,7 +602,7 @@ path, the out-of-character path and a consumer's own shard-to-shard move all rep
 | IC-03 | On a router, the session, character and the completed destination are handed to the transfer | test_ic_03_a_router_hands_the_session_to_the_transfer |
 | IC-04 | A character the account cannot puppet is refused, and nothing is transferred | test_ic_04_a_character_they_cannot_puppet_is_refused |
 | IC-05 | A missing object or session raises `RuntimeError`, as Evennia's does | test_ic_05_a_missing_object_or_session_raises |
-| IC-06 | A superuser puppets normally, even on a router | test_ic_06_a_superuser_puppets_normally |
+| IC-06 | Account `#1` puppets normally, even on a router | test_ic_06_account_one_puppets_normally |
 
 ### OC — going out of character
 
@@ -625,8 +638,10 @@ something got past the interception — a bug worth tracking down. It is logged 
 because guessing at a recovery would hide it. It names the account and the character with their archive
 ids, so the line says who to ask and what to look at.
 
-A superuser is the exception, and not an accident: superusers *do* puppet on the router, so reporting
-them would bury the real thing under routine noise. The archive skip runs before the breach check, so
+Account `#1` is the exception, and not an accident: it *does* puppet on the router, so reporting it
+would bury the real thing under routine noise. Any other account puppeting there is a breach, including
+a superuser that is not `#1` — under this rule one travels like anyone else, so finding it puppeted on
+the router means the same thing it means for anybody. The archive skip runs before the breach check, so
 the ordering of those two is load-bearing and `OC-05` and `OC-08` between them pin it.
 
 #### The command
@@ -635,7 +650,7 @@ the ordering of those two is load-bearing and `OC-05` and `OC-08` between them p
 command is the only place that knows it was deliberate — `unpuppet_object` is reached from
 `at_disconnect` and from `unpuppet_all()` as well.
 
-**The override is the shard's behaviour only.** On a router — and for a superuser anywhere — the command
+**The override is the shard's behaviour only.** On a router — and for account `#1` anywhere — the command
 is Evennia's, unchanged: unpuppet and render the character-select menu, or say they are already out of
 character. That is exactly right for the instance whose job is the out-of-character game, and it means
 the one hardcoded string this command would otherwise carry is Evennia's to word.
@@ -670,9 +685,9 @@ be the one move in the library that fails silently.
 | OC-02 | Nothing is deleted and nothing is transferred | test_oc_02_deletes_nothing_and_transfers_nothing |
 | OC-03 | A session with nothing puppeted archives nothing | test_oc_03_a_session_with_no_puppet_archives_nothing |
 | OC-04 | On a router, a puppeted character is logged as an invariant breach | test_oc_04_a_router_logs_a_puppeted_character_as_a_breach |
-| OC-05 | A superuser is not archived on unpuppet | test_oc_05_a_superuser_is_not_archived |
+| OC-05 | Account `#1` is not archived on unpuppet | test_oc_05_account_one_is_not_archived |
 | OC-06 | A list of sessions is handled, and every puppeted character is archived | test_oc_06_a_list_of_sessions_archives_every_character |
-| OC-08 | A superuser unpuppeting on the router is not logged as a breach | test_oc_08_a_superuser_on_the_router_is_not_a_breach |
+| OC-08 | Account `#1` unpuppeting on the router is not logged as a breach | test_oc_08_account_one_on_the_router_is_not_a_breach |
 | OC-09 | On a shard, going out of character transfers the session to the router | test_oc_09_a_shard_transfers_the_session_to_the_router |
 | OC-10 | On a shard, Evennia's `func` is not called, so no character-select menu is rendered | test_oc_10_a_shard_does_not_call_evennias_func |
 | OC-11 | The character is read before the unpuppet, which releases it | test_oc_11_reads_the_character_before_the_unpuppet |
@@ -680,7 +695,7 @@ be the one move in the library that fails silently.
 | OC-13 | On a router, `ooc` is Evennia's ordinary behaviour | test_oc_13_a_router_is_evennias_ordinary_behaviour |
 | OC-14 | On a shard, a session with nothing puppeted is sent to the router without a ticket, and logged | test_oc_14_a_shard_sends_a_stranded_session_home |
 | OC-15 | `AppConfig.ready()` installs the command, so a consumer's own survives | test_oc_15_ready_installs_the_command |
-| OC-16 | A superuser goes out of character where it stands, and is not transferred | test_oc_16_a_superuser_goes_ooc_where_it_stands |
+| OC-16 | Account `#1` goes out of character where it stands, and is not transferred | test_oc_16_account_one_goes_ooc_where_it_stands |
 | OC-17 | The stranded recovery reports its outcome, like any other move | test_oc_17_the_stranded_recovery_reports_its_outcome |
 
 ### LK — locking account changes to out of character

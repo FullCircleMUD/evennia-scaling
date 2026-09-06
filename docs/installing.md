@@ -250,11 +250,11 @@ classmethods on its account typeclass:
 | Method | What to change |
 |---|---|
 | `find_in_archive(identifier)` | Which column or attribute finds the archived account |
-| `refresh_from_archive(identifier)` | The local lookup for the superuser guard, which is `filter(username=identifier)` |
+| `refresh_from_archive(identifier)` | The local lookup that guards this instance's `#1`, which is `filter(username=identifier)` |
 
-**Both, or neither.** Override only the first and the superuser guard stops protecting anything: it
-looks the local account up by username, is handed something that is not one, matches nothing, and lets
-the rebuild proceed. A superuser rebuilt from the archive takes an operator's way in with it, and
+**Both, or neither.** Override only the first and that guard stops protecting anything: it looks the
+local account up by username, is handed something that is not one, matches nothing, and lets the
+restore proceed. This instance's `#1` rebuilt from the archive takes an operator's way in with it, and
 nothing about the failure looks like a failure.
 
 ## Installing the libraries
