@@ -19,6 +19,8 @@ from evennia.commands.default.account import (
     CmdQuell,
     CmdStyle,
 )
+from evennia.commands.default.general import CmdNick
+
 from .config import ROLE_SHARD, get_role, get_router_id
 from .log import scaling_log
 
@@ -85,11 +87,34 @@ class ScalingCmdIC(CmdIC):
     locks = "cmd:is_ooc()"
 
 
-# `ScalingCmdChannel` is not here yet. `evennia.commands.default.comms`
-# imports `evmenu`, which builds a class from Evennia's lazy `Command`
-# export — not populated until `evennia._init()` runs *after*
-# `django.setup()`. So it cannot be imported from `AppConfig.ready()`, and
-# the channel override needs an install point later in the boot.
+class ScalingCmdNick(CmdNick):
+    """One branch rewritten, rather than a lock.
+
+    `nick` writes to whatever the caller *is*, so a nick set in character
+    lands on the character and one set out of character lands on the
+    account with no help from us. The `/account` switch is a nick
+    *category*, not a target object.
+
+    `clearall` is the exception: it reaches through to
+    ``caller.account.nicks.clear()``, so clearing in character takes the
+    account's nicks with it. Written without the reach-through, the one
+    line covers both halves — the caller is the character in character and
+    the account out of it, and nothing has to detect which.
+    """
+
+    def func(self):
+        if "clearall" not in self.switches:
+            return super().func()
+
+        self.caller.nicks.clear()
+        self.caller.msg("Cleared all nicks.")
+
+
+# `ScalingCmdChannel` lives in `channel_command.py`, not here.
+# `evennia.commands.default.comms` imports `evmenu`, which builds a class
+# from Evennia's lazy `Command` export — not populated until
+# `evennia._init()` runs *after* `django.setup()`. This module is imported
+# from `AppConfig.ready()`, so it cannot reach `comms`.
 
 
 class ScalingCmdOOC(CmdOOC):

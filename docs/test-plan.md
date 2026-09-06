@@ -653,15 +653,17 @@ That is what makes the router's copy authoritative, which in turn is what lets i
 that cannot have changed elsewhere never has to be rebuilt, so its primary key is stable and anything
 holding it — a website session, most obviously — keeps working.
 
-**The mechanism is a lock, not a code change.** `is_ooc()` is a lockfunc; Evennia passes the session to
-a `cmd` access check, so a lockfunc can see whether anything is puppeted. Each command is subclassed
-with nothing but its lockstring, and `ready()` points the module attribute at the subclass — Evennia's
-own cmdsets read `account.CmdPassword` when a session's cmdset is built, so they pick ours up without
-their source changing.
+**Seven of the nine are a lock rather than a code change.** `is_ooc()` is a lockfunc; Evennia passes
+the session to a `cmd` access check, so a lockfunc can see whether anything is puppeted. Each command
+is subclassed with nothing but its lockstring, and `ready()` points the module attribute at the
+subclass — Evennia's own cmdsets read `account.CmdPassword` when a session's cmdset is built, so they
+pick ours up without their source changing.
 
 Each subclass carries its **whole** lockstring rather than an appended fragment, so it can be read
-against what Evennia ships. `CmdChannel` is why: its lock declares four access types, and `is_ooc()`
-belongs only in the `cmd:` clause.
+against what Evennia ships.
+
+`channel` and `nick` are guards inside `func()` instead, because for both of them only part of the
+command touches the account and the rest has to keep working in character.
 
 **These are restrictions Evennia does not have.** `ic` while puppeted is a supported flow there — it
 switches characters — and `quell` resets the puppet's lock cache precisely so it works in character. A
@@ -678,21 +680,53 @@ builder-only does that themselves.
 | LK-04 | Every overridden command carries the lockstring it is meant to | test_lk_04_each_override_carries_its_lockstring |
 | LK-05 | Each override keeps everything else its parent had — only the lock differs | test_lk_05_an_override_changes_nothing_but_the_lock |
 | LK-06 | `ready()` points each module attribute at the override, so Evennia's cmdsets pick it up | test_lk_06_ready_points_the_module_attributes_at_the_overrides |
+| LK-07 | In character, each of the four account-writing channel switches is refused and told where to go | test_lk_07_channel_account_switches_are_refused_in_character |
+| LK-08 | Out of character, those same switches reach Evennia's `func()` | test_lk_08_channel_account_switches_pass_out_of_character |
+| LK-09 | Sending and the read-only switches are untouched in character, and no lock is added | test_lk_09_channel_sending_is_untouched_in_character |
+| LK-10 | `at_server_init()` points `comms.CmdChannel` at the override | test_lk_10_at_server_init_installs_the_channel_override |
+| LK-11 | `ready()` appends our module to `AT_SERVER_STARTSTOP_MODULE`, keeping the game's own | test_lk_11_ready_appends_our_startstop_module |
+| LK-12 | A second `ready()` does not list the module twice | test_lk_12_the_startstop_module_is_listed_once |
+| LK-13 | `nick/clearall` in character clears the character's nicks and leaves the account's | test_lk_13_clearall_in_character_leaves_the_account_alone |
+| LK-14 | `nick/clearall` out of character clears the account's nicks | test_lk_14_clearall_out_of_character_clears_the_account |
+| LK-15 | Every other switch is Evennia's — a nick set in character still lands on the character | test_lk_15_setting_a_nick_still_reaches_evennias_func |
+| LK-16 | `ready()` points `general.CmdNick` at the override | test_lk_16_ready_points_nick_at_the_override |
 
 
 `LK-05` is the one that catches a copied lockstring with a clause dropped. It asserts no *code* changed
 — the parent's `func` and `parse` are still what run — rather than "defines only `locks`", because
 Evennia's command metaclass adds `_keyaliases` and `help_category` to every subclass.
 
-**`CmdChannel` is not overridden yet, and the reason is an install-point problem rather than a lock.**
+**The channel override is installed later in the boot than the other seven.**
 `evennia.commands.default.comms` imports `evmenu`, which builds a class from Evennia's lazy `Command`
 export — not populated until `evennia._init()` runs *after* `django.setup()`. So it cannot be imported
-from `AppConfig.ready()`, and the channel override needs somewhere later in the boot to be installed
-from. Its lockstring is written and its case arrives with it.
+from `AppConfig.ready()`, which is why the class lives in `channel_command.py` rather than in
+`commands.py`.
 
-`nick` is not a lock at all. It writes to whatever the caller currently *is*, so account nicks can only
-be set out of character already. The exception is `nick/clearall`, which reaches through the character
-to `caller.account.nicks.clear()` — a written override of that one switch, still to do.
+The seam is `at_server_init()`, the earliest hook Evennia calls on every module named in
+`AT_SERVER_STARTSTOP_MODULE`. `ready()` appends our module to that setting, so no consumer has to
+install anything. The setting is a list of *modules*, not a class to subclass — the game's own
+`server/conf/at_server_startstop.py` stays in the list and its hooks still run.
+
+**The channel restriction is four switches, not the command.** `sub` and `unsub` write the
+subscription and `alias` and `unalias` write channel nicks, all onto the account. Everything else is
+left alone: `mute`/`unmute` write to the channel rather than the account, the channel-management
+switches are already staff-locked, `list`/`all`/`history`/`who` only read, and sending has no switch at
+all. So a player in character sends and receives normally and is turned away only when changing what
+they are subscribed to.
+
+`CmdObjectChannel` is the character-caller variant and stays open — a character on a channel is not an
+account change. Replacing `comms.CmdChannel` cannot reach it in any case: it resolved its base when its
+class was created.
+
+**`nick` is an override of one branch rather than a lock.** It writes to whatever the caller currently
+*is*, so a nick set in character lands on the character and one set out of character lands on the
+account, with no help from us. The `/account` switch is a nick *category*, not a target object.
+
+The exception is `clearall`, which reaches through to `caller.account.nicks.clear()`. The override
+writes that branch without the reach-through and hands every other switch to `super().func()` — so
+`clearall` clears whatever the caller is and nothing else, which is both halves of the rule in the same
+few lines. `general.py` imports nothing Evennia populates late, so this one is installed from `ready()`
+with the account commands.
 
 ### MS — messages between instances
 

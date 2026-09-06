@@ -19,6 +19,7 @@ reasoning, and moves here as documents once a topic outgrows a case's prose.
 
 | Document | What it covers |
 |---|---|
+| [commands.md](commands.md) | The commands this library changes, and the in-character/out-of-character rule behind them |
 | [installing.md](installing.md) | What a game has to configure — instance naming across the three libraries, the settings this one reads, and the install order |
 | [interoperability.md](interoperability.md) | This library against every sibling library in `libraries/` |
 

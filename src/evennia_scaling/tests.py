@@ -2080,6 +2080,247 @@ class TestOOCLocks(unittest.TestCase):
                 )
                 self.assertIs(installed, override)
 
+    def _channel(self, switches, puppeted):
+        """Run the channel command, with Evennia's own `func` captured.
+
+        Patching the parent rather than driving the real command: what
+        these cases are about is whether the guard lets a call through,
+        and Evennia's `func()` wants a parsed command and a database
+        behind it.
+        """
+        from unittest import mock
+
+        from evennia_scaling.channel_command import ScalingCmdChannel
+
+        command = ScalingCmdChannel()
+        command.switches = list(switches)
+        command.session = _LockSession(puppet=object() if puppeted else None)
+        command.msg = mock.Mock()
+
+        with mock.patch.object(
+            ScalingCmdChannel.__bases__[0], "func"
+        ) as evennias:
+            command.func()
+        return evennias, command
+
+    def test_lk_07_channel_account_switches_are_refused_in_character(self):
+        """LK-07: the subscription and the aliases are on the account.
+
+        A shard's copy of the account is discarded, so a change made
+        there is thrown away with nothing in any log.
+        """
+        for switch in ("sub", "unsub", "alias", "unalias"):
+            with self.subTest(switch=switch):
+                evennias, command = self._channel([switch], puppeted=True)
+
+                evennias.assert_not_called()
+                command.msg.assert_called_once()
+
+    def test_lk_08_channel_account_switches_pass_out_of_character(self):
+        """LK-08: out of character is where these are meant to be used."""
+        for switch in ("sub", "unsub", "alias", "unalias"):
+            with self.subTest(switch=switch):
+                evennias, command = self._channel([switch], puppeted=False)
+
+                evennias.assert_called_once()
+                command.msg.assert_not_called()
+
+    def test_lk_09_channel_sending_is_untouched_in_character(self):
+        """LK-09: four switches are restricted, not the command.
+
+        Sending carries no switch at all, and the read-only switches
+        write nothing — a player in character talks on channels as they
+        always did. The lock is asserted here too, because removing it is
+        what makes that true.
+        """
+        from evennia.commands.default.comms import CmdChannel
+
+        from evennia_scaling.channel_command import ScalingCmdChannel
+
+        self.assertEqual(ScalingCmdChannel.locks, CmdChannel.locks)
+
+        for switches in ([], ["list"], ["all"], ["history"], ["who"], ["mute"]):
+            with self.subTest(switches=switches):
+                evennias, command = self._channel(switches, puppeted=True)
+
+                evennias.assert_called_once()
+                command.msg.assert_not_called()
+
+    def test_lk_10_at_server_init_installs_the_channel_override(self):
+        """LK-10: the same module-attribute swap the other seven get.
+
+        Restored afterwards: this one replaces an attribute on Evennia's
+        own module, and leaving it in place would follow the test run into
+        everything else that reads `comms.CmdChannel`.
+        """
+        from evennia.commands.default import comms
+
+        from evennia_scaling.at_server_startstop import at_server_init
+        from evennia_scaling.channel_command import ScalingCmdChannel
+
+        original = comms.CmdChannel
+        try:
+            at_server_init()
+            self.assertIs(comms.CmdChannel, ScalingCmdChannel)
+        finally:
+            comms.CmdChannel = original
+
+    def test_lk_11_ready_appends_our_startstop_module(self):
+        """LK-11: appended, so the game's own module keeps its hooks.
+
+        The setting's default is a bare string, which is what it is set to
+        here — `make_iter` allows either, so appending has to coerce.
+        """
+        from django.apps import apps as django_apps
+        from django.conf import settings
+        from evennia.utils.utils import make_iter
+
+        original = settings.AT_SERVER_STARTSTOP_MODULE
+        try:
+            settings.AT_SERVER_STARTSTOP_MODULE = (
+                "server.conf.at_server_startstop"
+            )
+            django_apps.get_app_config("evennia_scaling").ready()
+
+            listed = list(make_iter(settings.AT_SERVER_STARTSTOP_MODULE))
+            self.assertIn("server.conf.at_server_startstop", listed)
+            self.assertIn("evennia_scaling.at_server_startstop", listed)
+        finally:
+            settings.AT_SERVER_STARTSTOP_MODULE = original
+
+    def test_lk_12_the_startstop_module_is_listed_once(self):
+        """LK-12: `ready()` can run more than once, and the hook would too."""
+        from django.apps import apps as django_apps
+        from django.conf import settings
+        from evennia.utils.utils import make_iter
+
+        original = settings.AT_SERVER_STARTSTOP_MODULE
+        try:
+            settings.AT_SERVER_STARTSTOP_MODULE = (
+                "server.conf.at_server_startstop"
+            )
+            config = django_apps.get_app_config("evennia_scaling")
+            config.ready()
+            config.ready()
+
+            listed = list(make_iter(settings.AT_SERVER_STARTSTOP_MODULE))
+            self.assertEqual(
+                listed.count("evennia_scaling.at_server_startstop"), 1
+            )
+        finally:
+            settings.AT_SERVER_STARTSTOP_MODULE = original
+
+
+class TestNickCommand(TestCase):
+    """LK — the replaced `nick` command.
+
+    Real accounts and characters rather than stubs: what these cases are
+    about is which object a nick lands on, and a stub's nickhandler would
+    be the assertion answering itself.
+    """
+
+    databases = {"default", "archive", "messagebus"}
+
+    _next = 0
+
+    def setUp(self):
+        from evennia.utils.idmapper.models import flush_cache
+
+        super().setUp()
+        flush_cache()
+
+    def _playing(self):
+        """An account and its character, each carrying a nick."""
+        from evennia.utils.create import create_account
+
+        from tests.game_typeclasses import ScalingAccount
+
+        TestNickCommand._next += 1
+        name = f"nicholas{TestNickCommand._next}"
+        account = create_account(
+            name,
+            f"{name}@example.com",
+            "testpassword123",
+            typeclass=ScalingAccount,
+        )
+        character, errors = account.create_character(
+            key=f"NickChar{TestNickCommand._next}",
+            typeclass="tests.game_typeclasses.ScalingCharacter",
+        )
+        self.assertFalse(errors, errors)
+
+        account.nicks.add("greet", "say Hello")
+        character.nicks.add("wave", "emote waves")
+        return account, character
+
+    def _nick(self, caller, switches=(), lhs="", rhs=None, args=""):
+        """Run the command as a given caller.
+
+        The fields are set rather than parsed: `parse()` is Evennia's and
+        untouched, so driving it here would be testing their parser.
+        """
+        from evennia_scaling.commands import ScalingCmdNick
+
+        command = ScalingCmdNick()
+        command.caller = caller
+        command.switches = list(switches)
+        command.cmdstring = "nick"
+        command.args = args
+        command.lhs = lhs
+        command.rhs = rhs
+        command.func()
+        return command
+
+    def test_lk_13_clearall_in_character_leaves_the_account_alone(self):
+        """LK-13: the reach-through removed — a shard can clear a character."""
+        account, character = self._playing()
+
+        self._nick(character, switches=["clearall"])
+
+        self.assertFalse(character.nicks.get("wave"))
+        self.assertTrue(account.nicks.get("greet"))
+
+    def test_lk_14_clearall_out_of_character_clears_the_account(self):
+        """LK-14: the other half, and the same line does it.
+
+        Out of character the caller *is* the account, so nothing detects
+        anything — the character is left alone because it was never
+        reached.
+        """
+        account, character = self._playing()
+
+        self._nick(account, switches=["clearall"])
+
+        self.assertFalse(account.nicks.get("greet"))
+        self.assertTrue(character.nicks.get("wave"))
+
+    def test_lk_15_setting_a_nick_still_reaches_evennias_func(self):
+        """LK-15: the override rewrites one branch of a long `func()`.
+
+        This is the case that catches the fall-through being broken —
+        every switch but `clearall` is Evennia's and has to stay that way.
+        """
+        _, character = self._playing()
+
+        self._nick(character, lhs="hi", rhs="say Hello", args="hi = say Hello")
+
+        self.assertTrue(character.nicks.get("hi"))
+
+    def test_lk_16_ready_points_nick_at_the_override(self):
+        """LK-16: installed from `ready()` with the account commands.
+
+        `general.py` imports nothing Evennia populates late, so this one
+        needs no startup hook.
+        """
+        from django.apps import apps as django_apps
+        from evennia.commands.default import general
+
+        from evennia_scaling.commands import ScalingCmdNick
+
+        django_apps.get_app_config("evennia_scaling").ready()
+
+        self.assertIs(general.CmdNick, ScalingCmdNick)
+
 
 class _FakeMessage:
     """Stands in for a bus row — the two fields a handler reads."""

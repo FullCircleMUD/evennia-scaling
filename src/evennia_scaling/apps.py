@@ -31,6 +31,30 @@ class EvenniaScalingConfig(AppConfig):
 
         self._install_session_class()
         self._install_ooc_command()
+        self._install_channel_hook()
+
+    def _install_channel_hook(self):
+        """Add our startup module to the list Evennia calls hooks on.
+
+        The channel override cannot be installed from here — importing
+        `evennia.commands.default.comms` reaches Evennia's lazy ``Command``
+        export through `evmenu`, which `evennia._init()` has not populated
+        yet. So the install happens in `at_server_init()`, and this puts
+        the module carrying it where Evennia will find it.
+
+        Appended, not replaced: the game's own
+        ``server/conf/at_server_startstop.py`` stays in the list and its
+        hooks still run. The setting's default is a bare string, so it is
+        coerced first — and `ready()` can run more than once, so a path
+        already listed is left alone rather than added again.
+        """
+        from django.conf import settings
+        from evennia.utils.utils import make_iter
+
+        ours = "evennia_scaling.at_server_startstop"
+        modules = list(make_iter(settings.AT_SERVER_STARTSTOP_MODULE))
+        if ours not in modules:
+            settings.AT_SERVER_STARTSTOP_MODULE = modules + [ours]
 
     def _install_ooc_command(self):
         """Put our `ooc` where Evennia's default cmdset will pick it up.
@@ -60,6 +84,13 @@ class EvenniaScalingConfig(AppConfig):
         account_commands.CmdCharCreate = commands.ScalingCmdCharCreate
         account_commands.CmdCharDelete = commands.ScalingCmdCharDelete
         account_commands.CmdIC = commands.ScalingCmdIC
+
+        # `nick` is a rewritten branch rather than a lock, and it lives in
+        # a different module of Evennia's — but the install is the same
+        # assignment, and `general` imports nothing populated late.
+        from evennia.commands.default import general as general_commands
+
+        general_commands.CmdNick = commands.ScalingCmdNick
 
     def _install_session_class(self):
         """Subclass whatever `SERVER_SESSION_CLASS` names, and repoint it.
