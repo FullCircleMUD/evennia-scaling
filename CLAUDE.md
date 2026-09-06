@@ -38,9 +38,9 @@ For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Early — half a transfer.** The sending side is complete: both triggers, the transfer itself, its
-outcome reporting and its recovery path. The receiving side is not — a ticket is recognised on arrival
-and nothing is rebuilt from it. See [docs/progress.md](docs/progress.md).
+**A transfer works end to end, both directions.** Leaving, arriving and coming back are built and
+tested; a character still arrives in Limbo rather than the room it left from. See
+[docs/progress.md](docs/progress.md).
 
 `libraries/evennia-scaling-OLD/` is a reference to read, **never a source to copy from**. It answers
 this problem a different way; anything taken from it is discussed and agreed first.

@@ -5,8 +5,12 @@ index new ones as they are written.
 
 ## Design
 
-No design documents yet. The design lives in [test-plan.md](test-plan.md) as agreed cases and their
-reasoning, and moves here as documents once a topic outgrows a case's prose.
+| Document | What it covers |
+|---|---|
+| [where-state-changes.md](where-state-changes.md) | An account changes only on the router, a character only on the shard it is played on — and everything that follows from it |
+
+The rest of the design lives in [test-plan.md](test-plan.md) as agreed cases and their reasoning, and
+moves here as documents once a topic outgrows a case's prose.
 
 ## Process and discipline
 

@@ -79,6 +79,85 @@ def place_in_world(character):
     character.location = found[0]
 
 
+def account_for_ticket(ticket):
+    """The local account the ticket names, ready to be logged in.
+
+    **Only a shard rebuilds.** `rebuild_from_archive` is delete-then-restore
+    and the delete is the whole difference between the roles: a shard's copy
+    is left over from a previous visit and has to go, while the router's is
+    the authoritative one and must not move. Remaking it there would give it
+    a new primary key, and anything holding the old one — a Django website
+    session, resolved on every request — stops working.
+
+    So the router calls `restore`, which hands back a live account untouched.
+
+    An account the router does not already hold is restored anyway and
+    **logged**: a player at the door is not the moment to refuse, but the
+    only ways to reach it are a rebuilt database or a ticket for an account
+    this router has never seen.
+
+    Raises `NotArchived` when the archive does not hold it. The caller
+    turns that into a session it does not admit.
+    """
+    from django.conf import settings
+    from evennia.utils.utils import class_from_module
+    from evennia_archive.api import restore
+
+    from .config import ROLE_SHARD, get_role
+
+    archive_id = ticket["account_archive_id"]
+
+    if get_role() == ROLE_SHARD:
+        account_class = class_from_module(settings.BASE_ACCOUNT_TYPECLASS)
+        return account_class.rebuild_from_archive(archive_id)
+
+    if not _live_account(archive_id):
+        scaling_log(
+            f"account {archive_id} arrived on a ticket and is not in this "
+            f"database. Restoring it, but it should have been here.",
+            level="ERROR",
+        )
+
+    return restore(archive_id)
+
+
+def _live_account(archive_id):
+    """Whether an account carrying this archive id is already here.
+
+    Only `account_for_ticket` needs it, and only to tell the two cases
+    apart for the log — `restore` does the same lookup itself and will not
+    say which branch it took.
+    """
+    from evennia.accounts.models import AccountDB
+    from evennia_archive.mixins import ARCHIVE_ID_KEY
+
+    return AccountDB.objects.filter(
+        db_attributes__db_key=ARCHIVE_ID_KEY,
+        db_attributes__db_strvalue=str(archive_id),
+    ).exists()
+
+
+def character_for_ticket(ticket, account):
+    """Restore the character the ticket names and put it back on the roster.
+
+    Both roles do this. The character was deleted on the instance it left,
+    so the account's roster names something that is gone and the restored
+    object comes back under a new primary key — restoring it is only half
+    the job.
+
+    No other character is touched. They were never deleted, and a character
+    only changes on the shard it is being played on.
+
+    `add` rather than writing the roster attribute, so
+    ``at_post_add_character`` fires as it would for any other character.
+    """
+    from evennia_archive.api import restore
+
+    character = restore(ticket["character_archive_id"])
+    account.characters.add(character)
+    return character
+
+
 def reconstitute_for_ticket(session, ticket):
     """Rebuild what a redeemed ticket names, and return the local account.
 
@@ -86,32 +165,25 @@ def reconstitute_for_ticket(session, ticket):
     character outright, so nothing is searched for — the identifiers are
     the lookup.
 
-    Returns the rebuilt account, because `load_sync_data` needs it: setting
-    ``uid`` and ``logged_in`` is what lets `portal_connect` log the session
-    in, and there is nothing to set until the account exists here.
+    Returns the account, because `load_sync_data` needs it: setting ``uid``
+    and ``logged_in`` is what lets `portal_connect` log the session in, and
+    there is nothing to set until the account exists here.
 
     **``None`` means the session is not admitted**, and the caller's
     existing bounce is what happens next — so every failure here is one
     return and no new branch.
 
-    **The roles differ in what comes with the account.** A shard receives
-    exactly one character, the one the ticket names; a router renders a
-    character-select menu, so an account arriving back out of play needs
-    its whole roster. `restore_characters` is gated on the role inside
-    itself, so calling it does nothing on a shard.
+    Both roles get the account and the character back. What differs is what
+    happens next: a shard is where the character is played, so it is placed
+    in the world and stamped as what to puppet, and a router is neither of
+    those things.
     """
-    from django.conf import settings
-    from evennia.utils.utils import class_from_module
-    from evennia_archive.api import NotArchived, restore
+    from evennia_archive.api import NotArchived
 
     from .config import ROLE_SHARD, get_role
 
-    account_class = class_from_module(settings.BASE_ACCOUNT_TYPECLASS)
-
     try:
-        account = account_class.rebuild_from_archive(
-            ticket["account_archive_id"]
-        )
+        account = account_for_ticket(ticket)
     except NotArchived:
         scaling_log(
             f"ticket named account {ticket['account_archive_id']}, which is "
@@ -120,11 +192,10 @@ def reconstitute_for_ticket(session, ticket):
         )
         return None
 
-    if get_role() != ROLE_SHARD:
-        account_class.restore_characters(account)
-        return account
+    character = character_for_ticket(ticket, account)
 
-    character = restore(ticket["character_archive_id"])
+    if get_role() != ROLE_SHARD:
+        return account
 
     try:
         place_in_world(character)
@@ -211,21 +282,38 @@ def transfer_to_instance(account, session, character, to_instance):
     destination differs. A game moving a character between shards calls
     this too, so the path a consumer uses is the path the library uses.
 
-    Returns multiplex's Deferred of ``(moved, outcome)``. A destination
-    that is down refuses the move, and a caller that swallows that leaves a
-    player who asked to go in character seeing nothing at all.
+    Returns multiplex's Deferred of ``(moved, outcome)``, or ``None`` for a
+    superuser, who is refused. A destination that is down refuses the move,
+    and a caller that swallows that leaves a player who asked to go in
+    character seeing nothing at all.
 
-    Six steps, in this order:
+    **A superuser is refused outright.** A superuser belongs to one
+    instance and stays there — never transferred, never archived, never
+    restored, never deleted. Both of this library's own triggers already
+    step aside for one, so this is for a consumer calling here directly,
+    which the shard-to-shard case invites. They are told, because a
+    consumer who wrote that call meant something by it.
 
-    1. Archive the account — here rather than when the session closes,
-       because the destination rebuilds on arrival while this instance is
-       still tearing its session down.
-    2. Archive the character.
-    3. Mint a ticket naming both, addressed to ``to_instance``.
-    4. Send it over the bus, so the destination learns of the transfer
+    Five steps, in this order:
+
+    1. Archive whichever of the two could have changed here — here rather
+       than when the session closes, because the destination rebuilds on
+       arrival while this instance is still tearing its session down.
+    2. Mint a ticket naming both, addressed to ``to_instance``.
+    3. Send it over the bus, so the destination learns of the transfer
        independently of the session that is about to arrive.
-    5. Delete the character locally.
-    6. Hand the session over, carrying the ticket.
+    4. Delete the character locally.
+    5. Hand the session over, carrying the ticket.
+
+    **Archive what could have changed where you are leaving.** An account
+    can only change on the router and a character can only change on a
+    shard, so leaving the router archives the account and leaving a shard
+    archives the character. Router to shard stores the account; shard to
+    router and shard to shard store the character.
+
+    Archiving the other one would be worse than wasted: a shard's account
+    is a working copy, and writing it back over the authoritative one could
+    only ever carry a change that should not have been possible.
 
     **Deleting after the ticket is sent is deliberate.** A failure at the
     handoff leaves the character out of this database but present in the
@@ -241,8 +329,21 @@ def transfer_to_instance(account, session, character, to_instance):
     # are not loadable that early.
     from evennia_archive.api import archive
 
-    archive(account)
-    archive(character)
+    from .config import ROLE_ROUTER, get_role
+
+    if account.is_superuser:
+        scaling_log(
+            f"{account} is a superuser and was asked to transfer to "
+            f"{to_instance}. Refused.",
+            level="ERROR",
+        )
+        account.msg(
+            "Superusers are local to their instance and cannot be "
+            "transferred."
+        )
+        return None
+
+    archive(account if get_role() == ROLE_ROUTER else character)
 
     ticket = create_ticket(
         str(account.archive_id), str(character.archive_id), to_instance

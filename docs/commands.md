@@ -13,6 +13,8 @@ That separation is what lets a router and its shards run independently. The acco
 the router; a shard holds a working copy for as long as the character is there. A change made to an
 account on a shard would be lost when the character leaves, so it must not be possible to make one.
 
+The full rule and what else follows from it: [where-state-changes.md](where-state-changes.md).
+
 ## Restricted to out of character
 
 Evennia's commands, unchanged except that they can no longer be used while playing a character:

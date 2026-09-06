@@ -564,11 +564,12 @@ class TestAccountMixin(TestCase):
 
         self.assertFalse(ObjectDB.objects.filter(pk=character_pk).exists())
 
-    def test_ac_07_an_archived_account_is_refreshed_by_username(self):
+    def test_ac_07_an_absent_account_is_restored_by_username(self):
         """AC-07: the login door knows a username and nothing else.
 
         `authenticate` is handed a string a player typed, so finding the
-        identity is the work.
+        identity is the work. An account that is absent is a router whose
+        database was rebuilt — the one case there is something to restore.
         """
         from evennia_archive.api import archive
 
@@ -577,11 +578,12 @@ class TestAccountMixin(TestCase):
         account = self._account()
         account.db.progress = "as archived"
         archive(account)
-        account.db.progress = "changed since"
+        username = account.username
+        account.delete()
 
-        refreshed = ScalingAccount.refresh_from_archive(account.username)
+        restored = ScalingAccount.refresh_from_archive(username)
 
-        self.assertEqual(refreshed.db.progress, "as archived")
+        self.assertEqual(restored.db.progress, "as archived")
 
     def test_ac_08_an_unarchived_username_is_left_alone(self):
         """AC-08: a brand new account has nothing to come back from.
@@ -595,7 +597,9 @@ class TestAccountMixin(TestCase):
 
         account = self._account()
 
-        self.assertIsNone(ScalingAccount.refresh_from_archive(account.username))
+        returned = ScalingAccount.refresh_from_archive(account.username)
+
+        self.assertEqual(returned.pk, account.pk)
         self.assertTrue(AccountDB.objects.filter(pk=account.pk).exists())
 
     def test_ac_09_a_superuser_is_not_refreshed(self):
@@ -620,28 +624,26 @@ class TestAccountMixin(TestCase):
         # The same row, not a rebuilt one: a restore mints a new primary key.
         self.assertTrue(AccountDB.objects.filter(pk=pk).exists())
 
-    def test_ac_10_credentials_are_checked_against_the_archived_copy(self):
-        """AC-10: refreshing after `super()` would refuse a player's own password.
+    def test_ac_10_a_live_account_is_left_where_it_is(self):
+        """AC-10: the router's copy is the authoritative one.
 
-        Archived under one password, changed locally since. Authenticating
-        with the archived one passes only if the refresh ran first.
+        Nothing better exists to replace it with — an account can only
+        change here. Replacing it anyway moves its primary key, and a
+        Django website session names that key on every request.
         """
         from evennia_archive.api import archive
 
         from tests.game_typeclasses import ScalingAccount
 
         account = self._account()
-        account.set_password("archived-password")
-        account.save()
+        # Archived, or `find_in_archive` finds nothing and the old
+        # behaviour returns early — passing for the wrong reason.
         archive(account)
-        account.set_password("changed-since")
-        account.save()
+        pk = account.pk
 
-        found, errors = ScalingAccount.authenticate(
-            account.username, "archived-password"
-        )
+        returned = ScalingAccount.refresh_from_archive(account.username)
 
-        self.assertIsNotNone(found, errors)
+        self.assertEqual(returned.pk, pk)
 
 
     def test_ac_11_the_return_value_is_evennias(self):
@@ -708,7 +710,7 @@ class TestAccountMixin(TestCase):
         self._archived_character(account, "Rowan")
         self._archived_character(account, "Bram")
 
-        ScalingAccount.restore_characters(account)
+        ScalingAccount.restore_missing_characters(account)
 
         self.assertEqual(
             sorted(character.key for character in account.characters.all()),
@@ -729,7 +731,7 @@ class TestAccountMixin(TestCase):
         account = self._account()
         self._archived_character(account, "Rowan")
 
-        ScalingAccount.restore_characters(account)
+        ScalingAccount.restore_missing_characters(account)
 
         self.assertTrue(ObjectDB.objects.filter(db_key="Rowan").exists())
         self.assertEqual(
@@ -750,18 +752,17 @@ class TestAccountMixin(TestCase):
         account = self._account()
         self._archived_character(account, "Rowan")
 
-        ScalingAccount.restore_characters(account)
+        ScalingAccount.restore_missing_characters(account)
 
         self.assertFalse(ObjectDB.objects.filter(db_key="Rowan").exists())
         self.assertEqual(list(account.characters.all()), [])
 
     @override_settings(SCALING_ROLE="router")
-    def test_ac_17_refreshing_restores_the_characters(self):
-        """AC-17: the rebuild deletes them, so something has to bring them back.
+    def test_ac_17_a_restored_account_gets_its_characters(self):
+        """AC-17: an account that was absent has absent characters too.
 
-        A login that stopped at the rebuild would leave a player looking at
-        an empty character-select menu, having destroyed the local copies
-        on the way.
+        A login that restored the account alone would leave a player
+        looking at an empty character-select menu.
         """
         from evennia_archive.api import archive
 
@@ -771,11 +772,36 @@ class TestAccountMixin(TestCase):
         username = account.username
         self._archived_character(account, "Rowan")
         archive(account)
+        account.delete()
 
-        refreshed = ScalingAccount.refresh_from_archive(username)
+        restored = ScalingAccount.refresh_from_archive(username)
 
         self.assertEqual(
-            [character.key for character in refreshed.characters.all()],
+            [character.key for character in restored.characters.all()],
+            ["Rowan"],
+        )
+
+    def test_ac_18_a_stranded_character_comes_back_at_login(self):
+        """AC-18: an ungraceful exit leaves a character only in the archive.
+
+        The player never came back through the ticket door, so nothing
+        restored their character on the router. Login is where that is
+        noticed — and the account itself is still left where it is.
+        """
+        from evennia_archive.api import archive
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+        self._archived_character(account, "Rowan")
+        archive(account)
+        pk = account.pk
+
+        returned = ScalingAccount.refresh_from_archive(account.username)
+
+        self.assertEqual(returned.pk, pk)
+        self.assertEqual(
+            [character.key for character in returned.characters.all()],
             ["Rowan"],
         )
 
@@ -795,7 +821,7 @@ class TestAccountMixin(TestCase):
         self._archived_character(mine, "Rowan")
         self._archived_character(theirs, "Bram")
 
-        ScalingAccount.restore_characters(mine)
+        ScalingAccount.restore_missing_characters(mine)
 
         self.assertEqual(
             [character.key for character in mine.characters.all()], ["Rowan"]
@@ -1335,23 +1361,76 @@ class TestHandoff(TestCase):
         self.assertEqual(log.call_args.kwargs["level"], "ERROR")
         msg.assert_called_once()
 
-    def test_ho_01_archives_the_account_and_the_character(self):
-        """HO-01: the destination rebuilds from the archive, not from here.
-
-        The account is archived now rather than when the session closes,
-        because the destination rebuilds on arrival while this instance is
-        still tearing its session down.
-        """
+    def _archived(self):
+        """Every archive id the archive currently holds."""
         from evennia_archive.models import ArchiveRecord
 
+        return {
+            str(pk)
+            for pk in ArchiveRecord.objects.using("archive").values_list(
+                "pk", flat=True
+            )
+        }
+
+    def test_ho_01_leaving_the_router_archives_the_account(self):
+        """HO-01: the router is the only place an account can change.
+
+        Archived now rather than when the session closes, because the
+        destination rebuilds on arrival while this instance is still
+        tearing its session down.
+
+        The character is not archived here. It has not been played since it
+        was last stored, so there is nothing newer to write.
+        """
         account, character = self._playing()
         self._transfer(account, character)
 
-        archived = set(
-            ArchiveRecord.objects.using("archive").values_list("pk", flat=True)
-        )
-        self.assertIn(account.archive_id, {str(pk) for pk in archived})
-        self.assertIn(character.archive_id, {str(pk) for pk in archived})
+        archived = self._archived()
+        self.assertIn(str(account.archive_id), archived)
+        self.assertNotIn(str(character.archive_id), archived)
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ho_15_leaving_a_shard_archives_the_character(self):
+        """HO-15: the other half, and the reason the rule is a rule.
+
+        A shard's account is a working copy. Archiving it would write that
+        copy over the authoritative one, and the only difference it could
+        carry is a change that should not have been possible.
+
+        Sent to another shard rather than to the router because the suite's
+        own instance id *is* the router, and the bus refuses to address
+        itself. The rule is about where the session leaves, so either
+        destination exercises it.
+        """
+        account, character = self._playing()
+        self._transfer(account, character, to_instance="shard1")
+
+        archived = self._archived()
+        self.assertIn(str(character.archive_id), archived)
+        self.assertNotIn(str(account.archive_id), archived)
+
+    def test_ho_16_a_superuser_is_refused(self):
+        """HO-16: a superuser belongs to one instance and stays there.
+
+        Both of the library's own triggers already step aside for one, so
+        this is for a consumer calling `transfer_to_instance` directly —
+        which the shard-to-shard case invites. It says so rather than
+        failing quietly.
+        """
+        from unittest import mock
+
+        account, character = self._playing()
+        account.is_superuser = True
+        account.save()
+        account.msg = mock.Mock()
+
+        returned, send, delay, _ = self._transfer(account, character)
+
+        self.assertIsNone(returned)
+        send.assert_not_called()
+        delay.assert_not_called()
+        account.msg.assert_called_once()
+        self.assertEqual(self._archived(), set())
 
     def test_ho_02_mints_a_ticket_naming_both_and_the_destination(self):
         """HO-02: the destination has to know who is arriving.
@@ -1638,14 +1717,18 @@ class TestGoingOutOfCharacter(TestCase):
         return archive, log
 
     @override_settings(SCALING_ROLE="shard")
-    def test_oc_01_archives_the_account_and_the_character(self):
-        """OC-01: the archive is what the router rebuilds them from."""
+    def test_oc_01_archives_the_character_and_not_the_account(self):
+        """OC-01: a release is the moment a character's state is worth storing.
+
+        The account is left alone. On a shard it is a working copy, so
+        storing it could only write that copy over the authoritative one.
+        """
         account, character = self._playing()
         archive, _ = self._unpuppet(account, _PlayingSession(puppet=character))
 
         archived = [call.args[0] for call in archive.call_args_list]
-        self.assertIn(account, archived)
         self.assertIn(character, archived)
+        self.assertNotIn(account, archived)
 
     @override_settings(SCALING_ROLE="shard")
     def test_oc_02_deletes_nothing_and_transfers_nothing(self):
@@ -1734,23 +1817,6 @@ class TestGoingOutOfCharacter(TestCase):
         archived = [call.args[0] for call in archive.call_args_list]
         self.assertIn(first, archived)
         self.assertIn(second, archived)
-
-    @override_settings(SCALING_ROLE="shard", MAX_NR_CHARACTERS=2)
-    def test_oc_07_the_account_is_archived_once(self):
-        """OC-07: this runs while the server is trying to exit."""
-        account, first = self._playing()
-        second, errors = account.create_character(
-            key="Second", typeclass="tests.game_typeclasses.ScalingCharacter"
-        )
-        self.assertFalse(errors, errors)
-
-        archive, _ = self._unpuppet(
-            account,
-            [_PlayingSession(puppet=first), _PlayingSession(puppet=second)],
-        )
-
-        archived = [call.args[0] for call in archive.call_args_list]
-        self.assertEqual(archived.count(account), 1)
 
     @override_settings(SCALING_ROLE="router")
     def test_oc_08_a_superuser_on_the_router_is_not_a_breach(self):
@@ -2811,11 +2877,11 @@ class TestArrival(TestCase):
         self.assertEqual(placed.archive_id, expected)
 
     @override_settings(SCALING_ROLE="router")
-    def test_ss_13_a_router_rebuilds_the_roster_and_places_nobody(self):
-        """SS-13: the character-select menu reads live objects.
+    def test_ss_13_a_router_places_nobody(self):
+        """SS-13: a character is not standing anywhere on the router.
 
-        And nothing is placed: a character is not standing anywhere on the
-        router, which is not part of the game world.
+        The router is not part of the game world, so there is nowhere to
+        put an arriving character and nothing to place them in.
         """
         from unittest import mock
 
@@ -2823,14 +2889,9 @@ class TestArrival(TestCase):
         ticket = self._ticket_for(account, character)
         session = self._session(ticket["token"])
 
-        with mock.patch(
-            "evennia_scaling.handoff.place_in_world"
-        ) as place, mock.patch.object(
-            type(account), "restore_characters"
-        ) as roster:
+        with mock.patch("evennia_scaling.handoff.place_in_world") as place:
             session.load_sync_data({})
 
-        roster.assert_called_once()
         place.assert_not_called()
 
     @override_settings(SCALING_ROLE="shard")
@@ -2916,4 +2977,130 @@ class TestArrival(TestCase):
         self.assertFalse(session.logged_in)
         self.assertEqual(log.call_args.kwargs["level"], "ERROR")
         sending.assert_called_once()
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ss_17_a_shard_rebuilds_the_ticketed_account(self):
+        """SS-17: a shard's copy is stale, so the delete is the point.
+
+        `restore` on its own hands back whatever is already live, so
+        without the delete an arriving session gets the copy left over
+        from the last visit.
+        """
+        from evennia.accounts.models import AccountDB
+
+        from evennia_scaling.handoff import account_for_ticket
+
+        account, character = self._arriving()
+        ticket = self._ticket_for(account, character)
+        stale_pk = account.pk
+
+        rebuilt = account_for_ticket(ticket)
+
+        self.assertFalse(AccountDB.objects.filter(pk=stale_pk).exists())
+        self.assertEqual(str(rebuilt.archive_id), ticket["account_archive_id"])
+
+    def test_ss_18_a_router_keeps_its_live_account(self):
+        """SS-18: the router's copy is the authoritative one.
+
+        Deleting and remaking it moves its primary key, and a Django
+        website session names that key on every request.
+        """
+        from evennia.objects.models import ObjectDB
+
+        from evennia_scaling.handoff import account_for_ticket
+
+        account, character = self._arriving()
+        ticket = self._ticket_for(account, character)
+
+        kept = account_for_ticket(ticket)
+
+        self.assertEqual(kept.pk, account.pk)
+        # The rebuild takes the account's characters with it, so a
+        # surviving character is what says no rebuild happened.
+        self.assertTrue(ObjectDB.objects.filter(pk=character.pk).exists())
+
+    def test_ss_19_a_router_logs_an_account_it_did_not_have(self):
+        """SS-19: the account should have been here.
+
+        Restored anyway — a player at the door is not the moment to
+        refuse — but the absence is worth a line, because the only way to
+        reach it is a rebuilt database or a ticket for an account this
+        router has never seen.
+        """
+        from unittest import mock
+
+        from evennia_scaling.handoff import account_for_ticket
+
+        account, character = self._arriving()
+        ticket = self._ticket_for(account, character)
+        account.delete()
+
+        with mock.patch("evennia_scaling.handoff.scaling_log") as log:
+            restored = account_for_ticket(ticket)
+
+        self.assertEqual(str(restored.archive_id), ticket["account_archive_id"])
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+
+    def test_ss_20_the_ticketed_character_joins_the_roster(self):
+        """SS-20: the roster names something that is gone.
+
+        The character was deleted on the instance it left, and comes back
+        under a new primary key — so restoring it is only half the job.
+        """
+        from evennia_scaling.handoff import character_for_ticket
+
+        account, character = self._arriving()
+        ticket = self._ticket_for(account, character)
+        character.delete()
+
+        restored = character_for_ticket(ticket, account)
+
+        self.assertEqual(
+            str(restored.archive_id), ticket["character_archive_id"]
+        )
+        self.assertIn(restored, account.characters.all())
+
+    @override_settings(SCALING_ROLE="router")
+    def test_ss_21_a_router_brings_the_character_back(self):
+        """SS-21: the character was deleted on the shard it left.
+
+        Without this the player returns to a character-select menu short
+        one character, and every other case here still passes.
+        """
+        from evennia.accounts.models import AccountDB
+
+        account, character = self._arriving()
+        expected = str(character.archive_id)
+        ticket = self._ticket_for(account, character)
+        # As the shard left it: archived there, and gone from here.
+        character.delete()
+        session = self._session(ticket["token"])
+
+        session.load_sync_data({})
+
+        back = AccountDB.objects.get(pk=session.uid)
+        self.assertIn(
+            expected,
+            [str(one.archive_id) for one in back.characters.all()],
+        )
+
+    @override_settings(SCALING_ROLE="router")
+    def test_ss_22_a_router_sets_no_last_puppet(self):
+        """SS-22: nothing is puppeted on the router.
+
+        `_last_puppet` is what auto-puppet reads on arrival at a shard.
+        Writing it here would name a character the player has not asked
+        to play.
+        """
+        from evennia.accounts.models import AccountDB
+
+        account, character = self._arriving()
+        ticket = self._ticket_for(account, character)
+        character.delete()
+        session = self._session(ticket["token"])
+
+        session.load_sync_data({})
+
+        back = AccountDB.objects.get(pk=session.uid)
+        self.assertIsNone(back.db._last_puppet)
 

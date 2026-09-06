@@ -96,8 +96,8 @@ startup, naming what to add.
 **Two roles, and no third.** A router is where players log in and choose a character; a shard is where
 a character is played.
 
-`restore_characters` branches on the role, and the arrival path sends an unadmitted session back to the
-router only on a shard. So the setting earns its keep.
+`restore_missing_characters` branches on the role, and the arrival path sends an unadmitted session
+back to the router only on a shard. So the setting earns its keep.
 
 **The shard roster has no safe default either.** `SCALING_SHARDS` names every shard in the deployment,
 and a character's `current_shard` is validated against it. There is nothing to guess: an empty roster
@@ -185,26 +185,43 @@ and nothing on the router changes a character's state in between. Those two are 
 maintain — without them this is where a character's progress would be lost.
 
 They are found by the owner stamp rather than by `db_account` or the roster. The stamp is the link that
-survives an archive round trip, and it is what `restore_characters` searches by, so the delete and the
+survives an archive round trip, and it is what `restore_missing_characters` searches by, so the delete and the
 restore agree by construction.
 
-`restore_characters` is a separate step, gated on the role inside itself so a caller never branches. On a
+`restore_missing_characters` is a separate step, gated on the role inside itself so a caller never branches. On a
 shard it does nothing: a shard holds one character, the one its ticket names.
 
 **`refresh_from_archive` is the login door's wrapper**, and the only place a username is all that is
 known. `authenticate` is handed a string a player typed; finding the identity is the work. Every other
 way in already holds an `archive_id` and calls `rebuild_from_archive` directly — the ticket carries one.
 
-It adds one decision to that lookup: **a superuser is never rebuilt.** Evennia expects `#1` to be there,
-and replacing it with an archived copy takes an operator's way in with it. The guard runs before the
-rebuild, and its local lookup is `filter(username=identifier)`.
+**An account that is already here is returned untouched.** The router's copy is the authoritative one,
+so there is nothing better to replace it with — and replacing it moves its primary key, which anything
+outside the game holding that key is then naming a row that no longer exists. A Django website session
+resolves it on every request.
 
-**It restores the roster too.** `rebuild_from_archive` deletes the account's local characters, so a
-login that stopped at the rebuild would leave a player looking at an empty character-select menu — and
-would have destroyed the local copies on the way. The two doors in are symmetrical about this: the
-ticket door restores the roster from `reconstitute_for_ticket`, the login door from here. Neither can
-fire twice, because the ticket door never goes through this method — it already holds the archive id
-and has no username to search by.
+Only an account that is *absent* is restored, which is a router whose database was rebuilt. No delete,
+because there is nothing there to delete.
+
+It adds one decision to that lookup: **a superuser is never restored.** Evennia expects `#1` to be
+there, and replacing it with an archived copy takes an operator's way in with it. The guard runs first,
+and its local lookup is `filter(username=identifier)`.
+
+**It restores the roster on both paths.** For a restored account that is the obvious half — its
+characters are absent too. For an account that was already here it is the *stranded character* case: a
+player who left ungracefully while in character never came back through the ticket door, so their
+character is still only in the archive. Login is where that is noticed and fixed.
+
+`restore_missing_characters` is safe to run over characters that are already present. `restore` returns a live
+one unchanged, and Evennia's `add` skips one already on the roster — so it restores what is missing and
+disturbs nothing else.
+
+**Missing can also mean "being played on a shard right now."** A player linkdead on a shard who
+reconnects to the router looks identical from here, and restoring then puts a stale copy of a live
+character on the router. It recovers: the archive stays authoritative, and going in character rebuilds
+from it. Until then the select menu shows an old copy
+[TBD — needs discussion: whether the router should be able to tell the two apart, which needs the shard
+to say so].
 
 That local lookup is a second tie to the username, and it is not a seam. A consumer who overrides
 `find_in_archive` to identify accounts some other way must override this method too, or the guard is
@@ -226,7 +243,7 @@ has to proceed exactly as Evennia would.
 No role gate. A shard is never reached through this door: an unticketed session is sent to the router
 before a login screen renders.
 
-**`restore_characters` rebuilds the roster, and only on the router.** The character-select menu reads
+**`restore_missing_characters` rebuilds the roster, and only on the router.** The character-select menu reads
 live objects, so an account restored without its characters logs in to an empty menu — which looks like
 it worked.
 
@@ -248,17 +265,18 @@ also fires `at_post_add_character`.
 | AC-04 | A stale live copy is replaced rather than returned | test_ac_04_a_stale_local_copy_is_replaced |
 | AC-05 | An archive id that is nothing in the archive raises | test_ac_05_an_unarchived_identity_raises |
 | AC-06 | Rebuilding an account deletes its local characters, so nothing stale survives it | test_ac_06_the_accounts_local_characters_go_with_it |
-| AC-07 | An archived account is rebuilt from its username | test_ac_07_an_archived_account_is_refreshed_by_username |
+| AC-07 | An account that is absent locally is restored from its username | test_ac_07_an_absent_account_is_restored_by_username |
 | AC-08 | A username with nothing archived is left alone | test_ac_08_an_unarchived_username_is_left_alone |
-| AC-09 | A superuser is not rebuilt, even with an archived copy | test_ac_09_a_superuser_is_not_refreshed |
-| AC-10 | Credentials are checked against the archived copy, not a stale local one | test_ac_10_credentials_are_checked_against_the_archived_copy |
+| AC-09 | A superuser is not restored, even with an archived copy | test_ac_09_a_superuser_is_not_refreshed |
+| AC-10 | An account that is already here is returned untouched — its primary key does not move | test_ac_10_a_live_account_is_left_where_it_is |
 | AC-11 | The return value is Evennia's, unchanged | test_ac_11_the_return_value_is_evennias |
 | AC-12 | An account with nothing archived still authenticates | test_ac_12_an_unarchived_account_still_authenticates |
 | AC-13 | On the router, every character carrying this account's owner stamp is restored | test_ac_13_a_router_restores_every_owned_character |
 | AC-14 | Restored characters are on the account's roster | test_ac_14_restored_characters_join_the_roster |
 | AC-15 | On a shard, nothing is restored | test_ac_15_a_shard_restores_nothing |
 | AC-16 | Characters owned by a different account are not restored | test_ac_16_another_accounts_characters_are_left_alone |
-| AC-17 | Refreshing an account restores its characters, so a login does not empty the roster | test_ac_17_refreshing_restores_the_characters |
+| AC-17 | A restored account gets its characters back with it | test_ac_17_a_restored_account_gets_its_characters |
+| AC-18 | An account that was already here gets any stranded character back at login | test_ac_18_a_stranded_character_comes_back_at_login |
 
 ### SH — where a character is in the game world
 
@@ -443,11 +461,29 @@ to another instance. Symmetric: going in character sends them to the character's
 character sends them back to the router, and only the destination differs. A consumer moving a character
 between shards calls the same function, so the path a game uses is the path the library uses.
 
-Six steps: archive the account, archive the character, mint a ticket naming both, send it over the bus,
-delete the character locally, hand the session to `evennia-portal-multiplex`.
+Six steps: archive what could have changed here, mint a ticket naming the account and the character,
+send it over the bus, delete the character locally, hand the session to `evennia-portal-multiplex`.
 
-**The account is archived here** rather than when the session closes, because the destination rebuilds
-on arrival while the departing instance is still tearing its session down.
+**Archive what could have changed where you are leaving.** An account can only change on the router and
+a character can only change on a shard, so leaving the router archives the account and leaving a shard
+archives the character. Across the three transitions: router to shard archives the account, shard to
+router and shard to shard archive the character.
+
+Archiving the other one would be worse than wasted. A shard's account is a working copy, and writing it
+back over the authoritative one could only ever carry a change that should not have been possible.
+
+This rests on a character being in the archive before it can be sent anywhere
+[TBD — needs discussion: chargen archives a new character, so leaving the router has nothing newer to
+store. Not built — character creation has not been done yet].
+
+**Archived here** rather than when the session closes, because the destination rebuilds on arrival
+while the departing instance is still tearing its session down.
+
+**A superuser is refused outright.** A superuser belongs to one instance and stays there — never
+transferred, never archived, never restored, never deleted. Both of the library's own triggers already
+step aside for one, so this refusal is for a consumer calling this directly, which the shard-to-shard
+case invites. It says so rather than failing quietly, because a consumer who wrote that call meant
+something by it.
 
 **The character is deleted after the ticket is sent.** A failure at the handoff then leaves the
 character out of this database but present in the archive, with a live ticket already waiting — so a
@@ -497,7 +533,9 @@ The Deferred is still returned, so a caller can chain onto it. Nothing has to.
 
 | ID | Case | Test function |
 |---|---|---|
-| HO-01 | The account and the character are both archived | test_ho_01_archives_the_account_and_the_character |
+| HO-01 | Leaving the router archives the account and not the character | test_ho_01_leaving_the_router_archives_the_account |
+| HO-15 | Leaving a shard archives the character and not the account | test_ho_15_leaving_a_shard_archives_the_character |
+| HO-16 | A superuser is refused: nothing archived, no ticket, no move, and they are told why | test_ho_16_a_superuser_is_refused |
 | HO-02 | The ticket names both archive ids and the destination | test_ho_02_mints_a_ticket_naming_both_and_the_destination |
 | HO-03 | The ticket is sent to the destination over the bus | test_ho_03_sends_the_ticket_over_the_bus |
 | HO-04 | The character's deletion is deferred to the reactor, not done inline | test_ho_04_defers_the_character_delete |
@@ -555,8 +593,13 @@ path, the out-of-character path and a consumer's own shard-to-shard move all rep
 
 ### OC — going out of character
 
-`ScalingAccountMixin.unpuppet_object` lets Evennia release the character normally, then archives what
-was released. **It archives and stops.**
+`ScalingAccountMixin.unpuppet_object` lets Evennia release the character normally, then archives the
+character it released. **It archives and stops.**
+
+**The character alone.** A character is only played on a shard, so a release is the moment its newest
+state is worth storing. The account is not touched here for the same reason `transfer_to_instance`
+leaves it alone: on a shard it is a working copy, and on a router nothing is ever puppeted for this to
+be reached from.
 
 It is not only reached from `ooc`. `at_disconnect` calls it on every dropped connection and
 `unpuppet_all()` calls it at shutdown. Archiving is safe and useful on all three; deleting the character
@@ -623,13 +666,12 @@ be the one move in the library that fails silently.
 
 | ID | Case | Test function |
 |---|---|---|
-| OC-01 | The account and the character are archived | test_oc_01_archives_the_account_and_the_character |
+| OC-01 | The character is archived and the account is not | test_oc_01_archives_the_character_and_not_the_account |
 | OC-02 | Nothing is deleted and nothing is transferred | test_oc_02_deletes_nothing_and_transfers_nothing |
 | OC-03 | A session with nothing puppeted archives nothing | test_oc_03_a_session_with_no_puppet_archives_nothing |
 | OC-04 | On a router, a puppeted character is logged as an invariant breach | test_oc_04_a_router_logs_a_puppeted_character_as_a_breach |
 | OC-05 | A superuser is not archived on unpuppet | test_oc_05_a_superuser_is_not_archived |
 | OC-06 | A list of sessions is handled, and every puppeted character is archived | test_oc_06_a_list_of_sessions_archives_every_character |
-| OC-07 | The account is archived once, however many sessions arrive | test_oc_07_the_account_is_archived_once |
 | OC-08 | A superuser unpuppeting on the router is not logged as a breach | test_oc_08_a_superuser_on_the_router_is_not_a_breach |
 | OC-09 | On a shard, going out of character transfers the session to the router | test_oc_09_a_shard_transfers_the_session_to_the_router |
 | OC-10 | On a shard, Evennia's `func` is not called, so no character-select menu is rendered | test_oc_10_a_shard_does_not_call_evennias_func |
@@ -792,9 +834,21 @@ router's. On the router there is nothing to do: Evennia shows the login screen.
 `None` means the session is not admitted, and the bounce above is what happens next — so every failure
 here is one `return None` and no new branch.
 
-The roles differ in what comes back with the account. A shard receives exactly one character, the one
-the ticket names; a router renders a character-select menu, so it needs the whole roster.
-`restore_characters` is gated on the role inside itself, so calling it does nothing on a shard.
+It is three functions. `account_for_ticket` gets the account, `character_for_ticket` gets the
+character, and `reconstitute_for_ticket` calls both and does what is left.
+
+**Only a shard rebuilds the account.** `rebuild_from_archive` is delete-then-restore, and the delete is
+the whole difference: on a shard the local copy is stale and has to go, on the router it is the
+authoritative one and must not move. So the router calls `restore` directly, which hands back a live
+account untouched.
+
+An account the router does not already hold is restored anyway, and **logged as an error** — it should
+have been there.
+
+**Both roles restore the character the ticket names and add it to the account's roster.** It was deleted
+on the instance it left, so the roster names something that is gone and the restored object has a new
+primary key. No other character is touched: they were never deleted, and a character only changes on
+the shard it is played on.
 
 **`_last_puppet` is the reference the archive drops.** `at_post_login` reads it to auto-puppet, and a
 bare `ic` resolves through it. Without it Evennia says the character does not exist — which it does,
@@ -829,10 +883,16 @@ character, and its failure is handled.
 | SS-10 | A router leaves a session it cannot admit alone | test_ss_10_a_router_leaves_an_unadmitted_session_alone |
 | SS-11 | A redeemed ticket rebuilds the account and admits the session | test_ss_11_a_redeemed_ticket_admits_the_session |
 | SS-12 | On a shard, the character the ticket names is rebuilt and handed to `place_in_world` | test_ss_12_a_shard_rebuilds_and_places_the_ticketed_character |
-| SS-13 | On a router, the account's whole roster is rebuilt, and no character is placed | test_ss_13_a_router_rebuilds_the_roster_and_places_nobody |
+| SS-13 | On a router, no character is placed | test_ss_13_a_router_places_nobody |
 | SS-14 | The rebuilt character becomes `_last_puppet`, so auto-puppet finds it | test_ss_14_the_character_becomes_last_puppet |
 | SS-15 | An account the archive does not hold leaves the session unadmitted, logged | test_ss_15_an_unarchived_account_is_not_admitted |
 | SS-16 | A character that cannot be placed leaves the session unadmitted, logged | test_ss_16_a_character_that_cannot_be_placed_is_not_admitted |
+| SS-17 | On a shard, `account_for_ticket` rebuilds — a stale local copy is deleted first | test_ss_17_a_shard_rebuilds_the_ticketed_account |
+| SS-18 | On a router, `account_for_ticket` returns the live account unchanged, deleting nothing | test_ss_18_a_router_keeps_its_live_account |
+| SS-19 | On a router, an account that is not there is restored, and the absence is logged as an error | test_ss_19_a_router_logs_an_account_it_did_not_have |
+| SS-20 | `character_for_ticket` restores the character the ticket names and adds it to the roster | test_ss_20_the_ticketed_character_joins_the_roster |
+| SS-21 | On a router, the character the ticket names comes back and is on the account's roster | test_ss_21_a_router_brings_the_character_back |
+| SS-22 | On a router, `_last_puppet` is not set — nothing is puppeted there | test_ss_22_a_router_sets_no_last_puppet |
 
 ### TK — tickets
 

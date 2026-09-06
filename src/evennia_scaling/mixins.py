@@ -250,7 +250,7 @@ class ScalingAccountMixin(ArchivableAccountMixin):
         if existing is not None:
             # By the owner stamp rather than `db_account` or the roster.
             # The stamp is the link that survives an archive round trip, and
-            # it is what `restore_characters` searches by — so the delete
+            # it is what `restore_missing_characters` searches by — so the delete
             # and the restore agree by construction.
             #
             # No cache flush needed: Evennia's `delete` calls
@@ -267,18 +267,36 @@ class ScalingAccountMixin(ArchivableAccountMixin):
 
     @classmethod
     def refresh_from_archive(cls, identifier):
-        """Rebuild this account from the archive, replacing what is local.
+        """Make sure this account and its characters are here.
 
-        The login door's wrapper around `rebuild_from_archive`, and the only
-        place a username is all that is known — `authenticate` is handed a
-        string a player typed, so finding the identity is the work. Every
-        other way in already holds an ``archive_id`` and rebuilds directly.
+        The login door, and the only place a username is all that is known
+        — `authenticate` is handed a string a player typed, so finding the
+        identity is the work. Every other way in already holds an
+        ``archive_id``.
 
-        Returns the rebuilt account, or ``None`` when there is nothing to
-        rebuild from. An identifier with nothing archived is the ordinary
-        case on a first login, not a fault.
+        **An account that is already here is returned untouched.** This
+        instance is the only place it can have changed, so there is nothing
+        better to replace it with — and replacing it moves its primary key,
+        which anything outside the game holding that key is then naming a
+        row that is gone. A Django website session resolves it on every
+        request.
 
-        **A superuser is never rebuilt.** Evennia expects ``#1`` to be
+        Only an absent account is restored, which is an instance whose
+        database was rebuilt. Nothing is deleted, because there is nothing
+        there to delete.
+
+        Returns the account, or ``None`` when there is nothing to restore
+        and nothing local. An identifier with nothing archived is the
+        ordinary case on a first login, not a fault.
+
+        **The roster is restored either way.** For a restored account that
+        is the obvious half — its characters are absent too. For an account
+        that was already here it is the stranded-character case: a player
+        who left ungracefully while in character never came back through
+        the ticket door, so their character is still only in the archive.
+        This is where that is noticed.
+
+        **A superuser is never restored.** Evennia expects ``#1`` to be
         there, and replacing it with an archived copy takes an operator's
         way in with it.
 
@@ -291,21 +309,25 @@ class ScalingAccountMixin(ArchivableAccountMixin):
 
         **Reaches the archive, so wrap the caller in `deferToThread`.**
         """
-        existing = cls.objects.filter(username=identifier).first()
-        if existing is not None and existing.is_superuser:
+        from evennia_archive.api import restore
+
+        account = cls.objects.filter(username=identifier).first()
+
+        if account is not None and account.is_superuser:
             return None
 
-        archive_id = cls.find_in_archive(identifier)
-        if archive_id is None:
-            return None
+        if account is None:
+            archive_id = cls.find_in_archive(identifier)
+            if archive_id is None:
+                return None
+            account = restore(archive_id)
 
-        account = cls.rebuild_from_archive(archive_id)
-
-        # The rebuild deleted the account's local characters, so without
-        # this a login leaves an empty character-select menu — and has
-        # destroyed the local copies on the way. Role-gated inside itself,
-        # so it does nothing on a shard.
-        cls.restore_characters(account)
+        # Both paths. A restored account arrives without its characters,
+        # and one that was already here may be missing a character that
+        # never came home from a shard. Safe over characters that are
+        # already present, and role-gated inside itself so it does nothing
+        # on a shard.
+        cls.restore_missing_characters(account)
         return account
 
     @classmethod
@@ -336,7 +358,12 @@ class ScalingAccountMixin(ArchivableAccountMixin):
         return super().authenticate(username, password, ip=ip, **kwargs)
 
     def unpuppet_object(self, session):
-        """Release the character as Evennia does, and archive what was played.
+        """Release the character as Evennia does, and archive it.
+
+        **The character alone.** It is only ever played on a shard, so a
+        release is the moment its newest state is worth storing. The
+        account is not touched: on a shard it is a working copy, and on a
+        router nothing is puppeted for this to be reached from.
 
         Archiving and nothing else. This is not only reached from `ooc` —
         `at_disconnect` calls it on every dropped connection and
@@ -400,9 +427,6 @@ class ScalingAccountMixin(ArchivableAccountMixin):
                 level="ERROR",
             )
 
-        # The account once, however many sessions arrived — this runs while
-        # the server is trying to exit.
-        archive(self)
         for character in characters:
             archive(character)
 
@@ -455,8 +479,12 @@ class ScalingAccountMixin(ArchivableAccountMixin):
         )
 
     @classmethod
-    def restore_characters(cls, account):
-        """Rebuild every character this account owns. Router only.
+    def restore_missing_characters(cls, account):
+        """Bring back any character this account owns that is not here.
+
+        Returns the list of characters it restored, which is empty when
+        the roster was already complete. A caller wanting to say something
+        about a character that had been left behind reads that.
 
         The character-select menu reads live objects, so an account
         restored without its characters logs in to an empty menu — which
@@ -485,9 +513,30 @@ class ScalingAccountMixin(ArchivableAccountMixin):
         from .config import ROLE_ROUTER, get_role
 
         if get_role() != ROLE_ROUTER:
-            return
+            return []
 
+        # Safe to run over characters that are already here: `restore`
+        # returns a live one unchanged, and Evennia's `add` skips one
+        # already on the roster. What is reported as restored is what was
+        # genuinely absent, so the emptiness of the list means something.
+        restored = []
         for archive_id in find_by_attribute(
             OWNER_ACCOUNT_KEY, str(account.archive_id)
         ):
-            account.characters.add(restore(archive_id))
+            was_here = cls._live_character(archive_id)
+            character = restore(archive_id)
+            account.characters.add(character)
+            if not was_here:
+                restored.append(character)
+        return restored
+
+    @staticmethod
+    def _live_character(archive_id):
+        """Whether a character carrying this archive id is already here."""
+        from evennia.objects.models import ObjectDB
+        from evennia_archive.mixins import ARCHIVE_ID_KEY
+
+        return ObjectDB.objects.filter(
+            db_attributes__db_key=ARCHIVE_ID_KEY,
+            db_attributes__db_strvalue=str(archive_id),
+        ).exists()

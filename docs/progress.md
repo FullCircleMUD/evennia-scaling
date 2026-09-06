@@ -2,6 +2,31 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-05 — one place each thing can change
+
+154 tests. A transfer works end to end in both directions, and the rule behind it is written down:
+[where-state-changes.md](where-state-changes.md).
+
+- **An account changes only on the router; a character only on the shard it is played on.** Two
+  instances can hold the same account at once, so one of them has to be the real one.
+- **Leaving archives what could have changed there** — router to shard stores the account, shard to
+  anywhere stores the character. Storing the other one writes a copy that cannot have changed over one
+  that is authoritative.
+- **The router stopped rebuilding its account.** On arrival and at login it is found and returned, not
+  deleted and remade. Its primary key stops moving, which is what a Django website session names on
+  every request.
+- **`reconstitute_for_ticket` became three functions** — `account_for_ticket`, `character_for_ticket`
+  and the orchestration left over. Both roles now bring the ticket's character back and put it on the
+  roster; only a shard places it and stamps `_last_puppet`.
+- **`restore_missing_characters`** — renamed for what it does, and it returns what it restored. A
+  character that never came home from a shard is noticed at login.
+- **Nine commands that change account state** are out of character only. Seven by lockstring; `channel`
+  guards four switches and `nick` rewrites one branch, so both keep working in character.
+- **A superuser is refused a transfer outright** and told why. It belongs to one instance.
+
+Known limit, recorded rather than solved: a character missing from the router looks the same whether it
+was stranded by an ungraceful exit or is being played on a shard right now.
+
 ## 2026-09-05 — where a character lives, as a second pair
 
 123 tests. Still all on the departure side: working out what the arrival needs turned into work the

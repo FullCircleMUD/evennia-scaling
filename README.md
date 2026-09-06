@@ -18,9 +18,11 @@ session over.
 
 ## Status
 
-**Early — half a transfer.** Leaving works: going in character on the router archives the account and
-character, mints a ticket, announces it over the bus and hands the session to the destination. Arriving
-does not — the receiving instance recognises the ticket and then has nothing to rebuild from it yet. See
+**A transfer works end to end, both directions.** Going in character archives what could have changed,
+mints a ticket, announces it over the bus and hands the session to the destination, which redeems the
+ticket and rebuilds what it names. Going out of character does the same in reverse.
+
+Not finished: a character arrives in Limbo rather than the room it left from. See
 [docs/progress.md](docs/progress.md).
 
 ## Is this for me?
