@@ -2898,30 +2898,6 @@ _LOCKED = {
 class TestOOCLocks(unittest.TestCase):
     """LK — locking account changes to out of character."""
 
-    def test_lk_01_is_ooc_is_true_without_a_puppet(self):
-        """LK-01: out of character means nothing is being played."""
-        from evennia_scaling.lockfuncs import is_ooc
-
-        self.assertTrue(is_ooc(None, None, session=_LockSession()))
-
-    def test_lk_02_is_ooc_is_false_while_puppeting(self):
-        """LK-02: the whole point — a shard's copy of the account is discarded."""
-        from evennia_scaling.lockfuncs import is_ooc
-
-        self.assertFalse(
-            is_ooc(None, None, session=_LockSession(puppet=object()))
-        )
-
-    def test_lk_03_is_ooc_is_true_without_a_session(self):
-        """LK-03: a check outside a command is not a character standing somewhere.
-
-        Refusing there would fail closed for a caller that never had a
-        session to begin with.
-        """
-        from evennia_scaling.lockfuncs import is_ooc
-
-        self.assertTrue(is_ooc(None, None))
-
     def test_lk_04_each_override_carries_its_lockstring(self):
         """LK-04: the whole string, not an appended fragment.
 

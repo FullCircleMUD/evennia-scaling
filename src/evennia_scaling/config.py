@@ -42,7 +42,7 @@ def get_router_id():
     """
     from django.conf import settings
 
-    return getattr(settings, SETTING_ROUTER_ID)
+    return settings.SCALING_ROUTER_ID
 
 
 SETTING_SHARDS = "SCALING_SHARDS"
@@ -58,7 +58,7 @@ def get_shards():
     """
     from django.conf import settings
 
-    return getattr(settings, SETTING_SHARDS)
+    return settings.SCALING_SHARDS
 
 
 SETTING_START_LOCATION_SHARD = "SCALING_START_LOCATION_SHARD"
@@ -92,7 +92,7 @@ def get_start_location_shard():
     """
     from django.conf import settings
 
-    return getattr(settings, SETTING_START_LOCATION_SHARD)
+    return settings.SCALING_START_LOCATION_SHARD
 
 
 def get_start_location_uuid():
@@ -103,14 +103,14 @@ def get_start_location_uuid():
     """
     from django.conf import settings
 
-    return getattr(settings, SETTING_START_LOCATION_UUID)
+    return settings.SCALING_START_LOCATION_UUID
 
 
 def get_default_home_shard():
     """Return the shard the default home room is on. Checked at boot."""
     from django.conf import settings
 
-    return getattr(settings, SETTING_DEFAULT_HOME_SHARD)
+    return settings.SCALING_DEFAULT_HOME_SHARD
 
 
 def get_default_home_uuid():
@@ -121,7 +121,7 @@ def get_default_home_uuid():
     """
     from django.conf import settings
 
-    return getattr(settings, SETTING_DEFAULT_HOME_UUID)
+    return settings.SCALING_DEFAULT_HOME_UUID
 
 
 SETTING_KEEP_LOCATION_IN_UNMARKED_ROOM = (
@@ -170,7 +170,7 @@ def get_role():
     """Return this instance's role. Checked at boot."""
     from django.conf import settings
 
-    return getattr(settings, SETTING_ROLE)
+    return settings.SCALING_ROLE
 
 
 SETTING_ACCOUNT_TYPECLASS = "BASE_ACCOUNT_TYPECLASS"

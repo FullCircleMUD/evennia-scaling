@@ -2,7 +2,7 @@
 """Logging shim for evennia-scaling.
 
 Every line the library emits goes to its own ``scaling.log``, co-located
-with Evennia's other logs under ``settings.LOG_DIR``, so debugging the bus
+with Evennia's other logs under ``settings.LOG_DIR``, so debugging scaling
 means reading one file rather than picking it out of the main server log.
 
 Lines are timestamped by Evennia, not here. ``logger.log_file`` prefixes

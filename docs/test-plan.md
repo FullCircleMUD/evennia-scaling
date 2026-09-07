@@ -1021,8 +1021,9 @@ That is what makes the router's copy authoritative, which in turn is what lets i
 that cannot have changed elsewhere never has to be rebuilt, so its primary key is stable and anything
 holding it — a website session, most obviously — keeps working.
 
-**Seven of the nine are a lock rather than a code change.** `is_ooc()` is a lockfunc; Evennia passes
-the session to a `cmd` access check, so a lockfunc can see whether anything is puppeted. Each command
+**Seven of the nine are a lock rather than a code change.** `is_ooc()` is one of Evennia's own
+lockfuncs; Evennia passes the session to a `cmd` access check, so it can see whether anything is
+puppeted — this library ships no lockfunc of its own and a consumer configures nothing. Each command
 is subclassed with nothing but its lockstring, and `ready()` points the module attribute at the
 subclass — Evennia's own cmdsets read `account.CmdPassword` when a session's cmdset is built, so they
 pick ours up without their source changing.
@@ -1042,9 +1043,6 @@ builder-only does that themselves.
 
 | ID | Case | Test function |
 |---|---|---|
-| LK-01 | `is_ooc()` is true when the session has no puppet | test_lk_01_is_ooc_is_true_without_a_puppet |
-| LK-02 | `is_ooc()` is false when the session is puppeting | test_lk_02_is_ooc_is_false_while_puppeting |
-| LK-03 | `is_ooc()` is true when there is no session at all — a check outside a command is not a puppet | test_lk_03_is_ooc_is_true_without_a_session |
 | LK-04 | Every overridden command carries the lockstring it is meant to | test_lk_04_each_override_carries_its_lockstring |
 | LK-05 | Each override keeps everything else its parent had — only the lock differs | test_lk_05_an_override_changes_nothing_but_the_lock |
 | LK-06 | `ready()` points each module attribute at the override, so Evennia's cmdsets pick it up | test_lk_06_ready_points_the_module_attributes_at_the_overrides |
@@ -1059,6 +1057,9 @@ builder-only does that themselves.
 | LK-15 | Every other switch is Evennia's — a nick set in character still lands on the character | test_lk_15_setting_a_nick_still_reaches_evennias_func |
 | LK-16 | `ready()` points `general.CmdNick` at the override | test_lk_16_ready_points_nick_at_the_override |
 
+
+`LK-01`, `LK-02` and `LK-03` are retired and their IDs are not reused. The next case in this section
+is `LK-17`.
 
 `LK-05` is the one that catches a copied lockstring with a clause dropped. It asserts no *code* changed
 — the parent's `func` and `parse` are still what run — rather than "defines only `locks`", because
