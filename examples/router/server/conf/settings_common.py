@@ -135,6 +135,10 @@ SCALING_SHARDS = ("shard0", "shard1")
 SCALING_START_LOCATION_SHARD = "shard0"
 SCALING_DEFAULT_HOME_SHARD = "shard0"
 
+# Where a new character begins. Forest Path, so it is somewhere other than
+# the default home and the two are visibly different rooms.
+SCALING_START_LOCATION_UUID = "a1000000-0000-4000-8000-000000000002"
+
 # The room half of the default home, as a uuid rather than a dbref: a dbref
 # names nothing after a world rebuild, and `DEFAULT_HOME` exists on every
 # instance, so falling back to it locally would drop a character into

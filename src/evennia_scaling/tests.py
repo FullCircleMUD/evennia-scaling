@@ -445,6 +445,40 @@ class TestConfig(TestCase):
         self.assertIn("SCALING_DEFAULT_HOME_UUID", message)
         self.assertIn("the-temple", message)
 
+    @override_settings(SCALING_START_LOCATION_UUID=None)
+    def test_cf_16_an_unset_start_location_uuid_is_refused(self):
+        """CF-16: the room half of where a new character begins.
+
+        No uuid the library invented would name anything, so there is
+        nothing to fall back to and an instance that does not know where
+        its new characters start cannot put one anywhere.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            check_settings()
+        self.assertIn("SCALING_START_LOCATION_UUID", str(raised.exception))
+
+    @override_settings(SCALING_START_LOCATION_UUID="the-village")
+    def test_cf_17_a_start_location_uuid_that_is_not_a_uuid_is_refused(self):
+        """CF-17: a mangled uuid matches nothing and says nothing.
+
+        Every new character would read it as their location, and every one
+        of them would fall through the arrival cascade to the default home
+        with no sign of why.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            check_settings()
+        message = str(raised.exception)
+        self.assertIn("SCALING_START_LOCATION_UUID", message)
+        self.assertIn("the-village", message)
+
     @override_settings(SCALING_SHARDS=("shard0",))
     def test_cf_10_a_world_anchor_outside_the_roster_is_refused(self):
         """CF-10: a name nothing runs under answers nothing.
@@ -1014,14 +1048,20 @@ class TestCurrentShard(TestCase):
         character.current_room_uuid = self.ROOM_UUID
         self.assertTrue(character.attributes.has(CURRENT_ROOM_UUID_KEY))
 
-    def test_sh_08_an_unassigned_room_uuid_reads_as_none(self):
-        """SH-08: a room key means nothing without a shard beside it.
+    @override_settings(
+        SCALING_START_LOCATION_UUID="7c3e9d15-4a08-4b62-8f71-2d6a0b5c9e34"
+    )
+    def test_sh_08_an_unassigned_room_uuid_reads_as_the_start_location(self):
+        """SH-08: the other half of the pair, defaulting like its shard.
 
-        So there is no useful value to fall back to at read time — the pair
-        is completed at the moment of use instead.
+        So a character created any way at all is somewhere real, and
+        nothing has to hook chargen to put them there.
         """
         character = self._character()
-        self.assertIsNone(character.current_room_uuid)
+        self.assertEqual(
+            character.current_room_uuid,
+            "7c3e9d15-4a08-4b62-8f71-2d6a0b5c9e34",
+        )
 
     @override_settings(
         SCALING_DEFAULT_HOME_SHARD="shard1", DEFAULT_HOME="#99"
@@ -1048,6 +1088,10 @@ class TestCurrentShard(TestCase):
         """
         character = self._character()
         character.current_shard = "shard0"
+        # Cleared rather than left alone: it defaults to the start
+        # location, so leaving it would make the location pair usable and
+        # the cascade would never reach the home pair.
+        character.current_room_uuid = None
         character.home_shard = "shard0"
         character.home_room_uuid = self.HOME_UUID
 
@@ -1089,9 +1133,14 @@ class TestCurrentShard(TestCase):
         so writing it into a field that holds uuids would leave the arrival
         unable to tell which kind of value it is holding. Unset is also the
         truer claim: this cascade knows the shard and not the room.
+
+        The room half is cleared rather than left alone: it defaults to the
+        start location now, so leaving it would make the pair usable and
+        the cascade would never reach here.
         """
         character = self._character()
         character.current_shard = "shard0"
+        character.current_room_uuid = None
 
         self.assertEqual(character.ensure_location_for_transfer(), "shard1")
         self.assertEqual(character.current_shard, "shard1")
@@ -1107,6 +1156,7 @@ class TestCurrentShard(TestCase):
         """
         character = self._character()
         character.current_shard = "shard0"
+        character.current_room_uuid = None
 
         character.ensure_location_for_transfer()
 
@@ -1222,10 +1272,14 @@ class TestCurrentShard(TestCase):
         creation, which is a router operation.
         """
         character = self._character()
+        before = character.current_room_uuid
 
         character.move_to(self._room(self.ROOM_UUID), quiet=True)
 
-        self.assertIsNone(character.current_room_uuid)
+        # Untouched rather than empty: it reads the start location until
+        # something on a shard stamps it.
+        self.assertEqual(character.current_room_uuid, before)
+        self.assertNotEqual(character.current_room_uuid, self.ROOM_UUID)
         self.assertEqual(character.current_shard, "shard0")
 
     @override_settings(SCALING_ROLE="shard", MULTIPLEX_INSTANCE_ID="shard1")

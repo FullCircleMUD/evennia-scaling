@@ -134,17 +134,17 @@ guess which instance holds a room; or naming something outside `SCALING_SHARDS`,
 runs under sends characters to an instance that never answers. Neither shows up as a misconfiguration
 at the point it bites — the first character created is already in front of a player.
 
-**`SCALING_DEFAULT_HOME_UUID` names the one room a character can always be sent to**, and it is the room
-half of the pair `SCALING_DEFAULT_HOME_SHARD` opens. Required, because no uuid the library invented would
-name anything.
+**The two world anchors are pairs, and each pair is two settings.** `SCALING_START_LOCATION_UUID` names
+the room a new character begins in, and `SCALING_DEFAULT_HOME_UUID` the one they can always be sent to.
+Both are required, because no uuid the library invented would name anything.
 
-Checked twice: that it is set, and that it parses as a uuid. The second matters because the value is
-carried as a string and compared as one — a truncated or hand-mangled uuid satisfies every other test
-and simply matches nothing, so the last resort in the placement cascade silently has no room in it.
+Each is checked twice: that it is set, and that it parses as a uuid. The second matters because the
+value is carried as a string and compared as one — a truncated or hand-mangled uuid satisfies every
+other test and simply matches nothing, so a new character starts nowhere, or the last resort in the
+placement cascade silently has no room in it.
 
-Not checked here: whether it names a room that exists. That room is on one shard and every other
-instance boots without it, so the question can only be asked where the answer means something — see
-`PL-09`.
+Not checked: whether either names a room that exists. Each room is on one shard and every other instance
+boots without it, so the question can only be asked where the answer means something — see `PL-09`.
 
 **`SCALING_KEEP_LOCATION_IN_UNMARKED_ROOM` has a safe default, so it is not checked at boot.** It says
 what a character's recorded location becomes when they walk into a room with no uuid — see `SH-19` and
@@ -171,6 +171,8 @@ line; restoring a value the library has already cleared means reading it first.
 | CF-13 | `SCALING_KEEP_LOCATION_IN_UNMARKED_ROOM` defaults to keeping the last recorded room | test_cf_13_keeping_the_location_in_an_unmarked_room_is_the_default |
 | CF-14 | An unset `SCALING_DEFAULT_HOME_UUID` is refused, naming the setting | test_cf_14_an_unset_default_home_uuid_is_refused |
 | CF-15 | A `SCALING_DEFAULT_HOME_UUID` that does not parse as a uuid is refused, naming the value | test_cf_15_a_default_home_uuid_that_is_not_a_uuid_is_refused |
+| CF-16 | An unset `SCALING_START_LOCATION_UUID` is refused, naming the setting | test_cf_16_an_unset_start_location_uuid_is_refused |
+| CF-17 | A `SCALING_START_LOCATION_UUID` that does not parse as a uuid is refused, naming the value | test_cf_17_a_start_location_uuid_that_is_not_a_uuid_is_refused |
 
 ### AC — the account mixin
 
@@ -348,9 +350,18 @@ database and means nothing in the next, so it cannot survive either a transfer o
 uuid is assigned to the room by the consumer and reproduced whenever the world is redeployed, so it
 still names the same room after either.
 
-It has no default and reads as `None` until something sets it. A room key is meaningless without a shard
-beside it, so there is no useful value to fall back to at read time; the pair is completed at the moment
-of use instead.
+**It defaults to `SCALING_START_LOCATION_UUID`**, the room half of the pair whose shard half is
+`SCALING_START_LOCATION_SHARD`. So a character created any way at all is somewhere real, and nothing has
+to hook chargen to put them there — Evennia's `autocreate` writes the default back on the first read,
+and the first thing that assigns a value wins from then on.
+
+That pair is where a new character begins, which is a different question from where they fall back to. A
+game that wants them the same points both pairs at one room; a game that wants a starting village and a
+temple to wake up in points them at two.
+
+`home_room_uuid` keeps no default. Where a character *lives* is something a game decides about that
+character, not something the deployment can answer for them, and its absence is what sends the cascade
+on to the default home.
 
 **Its shape is checked; its meaning is not.** Which uuids exist is the consumer's world, and the room it
 names is on another instance, so there is no way to ask whether it names anything. What can be checked
@@ -477,7 +488,7 @@ nothing about this subclass. `SH-22` is the one such case today, over `at_post_m
 | SH-05 | A character never assigned a shard reads as `SCALING_START_LOCATION_SHARD` | test_sh_05_a_character_never_assigned_reads_as_the_start_shard |
 | SH-06 | `ScalingCharacterMixin` extends `ArchivableCharacterMixin`, so one mixin on the character satisfies both | test_sh_06_carries_the_archive_mixin |
 | SH-07 | `current_room_uuid` is stored as an Attribute, so it survives the archive round trip | test_sh_07_the_room_uuid_is_stored_as_an_attribute |
-| SH-08 | A character never assigned one reads as `None` | test_sh_08_an_unassigned_room_uuid_reads_as_none |
+| SH-08 | A character never assigned one reads as `SCALING_START_LOCATION_UUID` | test_sh_08_an_unassigned_room_uuid_reads_as_the_start_location |
 | SH-09 | `ensure_location_for_transfer` leaves a character with both halves alone | test_sh_09_a_complete_pair_is_left_alone |
 | SH-10 | A character with a broken location and a usable home is sent home | test_sh_10_a_broken_location_falls_back_to_home |
 | SH-11 | The home pair is stored as Attributes, and `home_shard` refuses a shard outside the roster | test_sh_11_the_home_pair_is_stored_and_checked |

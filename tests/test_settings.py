@@ -94,6 +94,7 @@ BASE_ACCOUNT_TYPECLASS = "tests.typeclass_stubs.ScalingAccountStub"
 BASE_CHARACTER_TYPECLASS = "tests.typeclass_stubs.ScalingCharacterStub"
 SCALING_SHARDS = ("shard0", "shard1")
 SCALING_START_LOCATION_SHARD = "shard0"
+SCALING_START_LOCATION_UUID = "4d8f1a02-6b35-4e97-a0c4-8e2d7f5b3a16"
 SCALING_DEFAULT_HOME_SHARD = "shard0"
 SCALING_DEFAULT_HOME_UUID = "9c2f8b6d-4a71-4e35-b0c8-7d1e2a5f3049"
 

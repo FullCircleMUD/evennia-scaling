@@ -168,6 +168,7 @@ is a different room on each. **These settings supply the missing half of the key
 
 ```python
 SCALING_START_LOCATION_SHARD = "shard0"
+SCALING_START_LOCATION_UUID = "4d8f1a02-6b35-4e97-a0c4-8e2d7f5b3a16"
 SCALING_DEFAULT_HOME_SHARD = "shard0"
 SCALING_DEFAULT_HOME_UUID = "9c2f8b6d-4a71-4e35-b0c8-7d1e2a5f3049"
 ```
@@ -176,30 +177,32 @@ A room is addressed as a pair — the shard, then the room on it:
 
 | Room | Which shard | Which room |
 |---|---|---|
-| Where a new character starts | `SCALING_START_LOCATION_SHARD` | `START_LOCATION` |
+| Where a new character starts | `SCALING_START_LOCATION_SHARD` | `SCALING_START_LOCATION_UUID` |
 | Where a character falls back to | `SCALING_DEFAULT_HOME_SHARD` | `SCALING_DEFAULT_HOME_UUID` |
 
 The shard cannot be worked out at runtime. Asking over the bus which instance holds room #5 would get
 several answers, all of them correct.
 
-**The fallback room is named by uuid, not by `DEFAULT_HOME`.** A dbref names nothing after a world
-rebuild, and `DEFAULT_HOME` exists on every instance — so falling back to it locally would put a
-character in whichever shard's Limbo they happened to be standing on. Out of the box it is `#2`, a
+**Both rooms are named by uuid, not by Evennia's `START_LOCATION` and `DEFAULT_HOME`.** A dbref names
+nothing after a world rebuild, and both of those exist on every instance — so resolving one locally puts
+a character in whichever shard's Limbo they happened to be standing on. Out of the box that is `#2`, a
 technical room for the contents of destroyed objects rather than anywhere a game wants a player to wake
-up. Give the setting the `scaling_room_uuid` of a real room in your world; this library stops reading
-`DEFAULT_HOME` entirely, and Evennia goes on using it for its own purposes.
+up. Give each setting the `scaling_room_uuid` of a real room in your world; this library reads neither
+Evennia setting, and Evennia goes on using them for its own purposes.
 
-**The two rooms do different jobs.** `START_LOCATION` places a character once, at creation. From then
-on it is the home room that matters, so a character whose location goes away falls back to the default
-home. That is why they are separate settings — and why a game is free to put them on different shards.
+**The two rooms do different jobs.** The start location places a character once, at creation. From then
+on it is their own home room that matters, and a character whose location goes away falls back to the
+default home. Point both pairs at one room if you want them the same; point them at two if you want a
+starting village and a temple to wake up in.
 
-Neither has a default and both must name a shard in `SCALING_SHARDS`. A guess would send every new
-character to a real instance that simply is not the one intended, and nothing about that failure looks
-like a misconfiguration.
+None of the four has a default. Each shard must be in `SCALING_SHARDS`, and each uuid must parse as one
+— a guess would send every new character to a real instance that simply is not the one intended, and
+nothing about that failure looks like a misconfiguration.
 
-`SCALING_START_LOCATION_SHARD` is also what a character's `current_shard` defaults to, so a character
-created any way at all is somewhere without the game having to hook chargen. A game that offers a
-choice of starting towns assigns `current_shard` during chargen instead.
+**The start pair is what a character's location defaults to.** `current_shard` reads
+`SCALING_START_LOCATION_SHARD` and `current_room_uuid` reads `SCALING_START_LOCATION_UUID`, so a
+character created any way at all is somewhere real without the game having to hook chargen. A game that
+offers a choice of starting towns assigns the pair during chargen instead.
 
 ## Auto-puppet, per role
 
@@ -234,7 +237,8 @@ works.
 | `SCALING_ROLE` | Yes, no default | `"router"` or `"shard"`. An instance that does not know which cannot behave correctly, so it refuses to start |
 | `SCALING_ROUTER_ID` | Yes, no default | The instance that runs the portal and acts as the OOC area for the game. Must not be in `SCALING_SHARDS` |
 | `SCALING_SHARDS` | Yes, no default | Every shard in the deployment, as a list or tuple of instance ids. A character's `current_shard` is validated against it |
-| `SCALING_START_LOCATION_SHARD` | Yes, no default | Which shard holds `START_LOCATION`. Also what `current_shard` defaults to |
+| `SCALING_START_LOCATION_SHARD` | Yes, no default | Which shard a new character begins on. Also what `current_shard` defaults to |
+| `SCALING_START_LOCATION_UUID` | Yes, no default | That room's `scaling_room_uuid`. Also what `current_room_uuid` defaults to. Checked at boot for being set and for parsing as a uuid |
 | `SCALING_DEFAULT_HOME_SHARD` | Yes, no default | Which shard holds the default home room |
 | `SCALING_DEFAULT_HOME_UUID` | Yes, no default | That room's `scaling_room_uuid`. Checked at boot for being set and for parsing as a uuid |
 | `SCALING_TICKET_LIFETIME_SECONDS` | Defaults to `10` | How long a stored ticket stays redeemable |

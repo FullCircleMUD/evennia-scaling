@@ -62,8 +62,25 @@ def get_shards():
 
 
 SETTING_START_LOCATION_SHARD = "SCALING_START_LOCATION_SHARD"
+SETTING_START_LOCATION_UUID = "SCALING_START_LOCATION_UUID"
 SETTING_DEFAULT_HOME_SHARD = "SCALING_DEFAULT_HOME_SHARD"
 SETTING_DEFAULT_HOME_UUID = "SCALING_DEFAULT_HOME_UUID"
+
+#: The two world anchors, each a shard and a room. The first is where a new
+#: character begins; the second is where any character can always be sent.
+#: A game is free to point both at one room, or at two.
+WORLD_ANCHORS = (
+    (
+        SETTING_START_LOCATION_SHARD,
+        SETTING_START_LOCATION_UUID,
+        "where a new character begins",
+    ),
+    (
+        SETTING_DEFAULT_HOME_SHARD,
+        SETTING_DEFAULT_HOME_UUID,
+        "the one room a character can always be sent to",
+    ),
+)
 
 
 def get_start_location_shard():
@@ -76,6 +93,17 @@ def get_start_location_shard():
     from django.conf import settings
 
     return getattr(settings, SETTING_START_LOCATION_SHARD)
+
+
+def get_start_location_uuid():
+    """Return the start location room's uuid. Checked at boot.
+
+    The room half of the pair `get_start_location_shard` opens, and what a
+    character's `current_room_uuid` defaults to.
+    """
+    from django.conf import settings
+
+    return getattr(settings, SETTING_START_LOCATION_UUID)
 
 
 def get_default_home_shard():
@@ -325,27 +353,26 @@ def check_settings():
                 f"runs is a room no character can reach."
             )
 
-    # The room half of the default home. Checked for shape rather than for
+    # The room half of each anchor. Checked for shape rather than for
     # existence: the room is on one shard and every other instance boots
     # without it, so "does it name a room" can only be asked where the
     # answer means something. A mangled uuid otherwise satisfies every test
-    # here and simply matches nothing, leaving the last resort in the
-    # placement cascade with no room in it.
-    home_uuid = getattr(settings, SETTING_DEFAULT_HOME_UUID, None)
-    if not home_uuid:
-        problems.append(
-            f"{SETTING_DEFAULT_HOME_UUID} is not set. It names the one room "
-            f"a character can always be sent to, and no uuid this library "
-            f"invented would name anything."
-        )
-    else:
+    # here and simply matches nothing.
+    for _, setting, what in WORLD_ANCHORS:
+        room_uuid = getattr(settings, setting, None)
+        if not room_uuid:
+            problems.append(
+                f"{setting} is not set. It names {what}, and no uuid this "
+                f"library invented would name anything."
+            )
+            continue
         try:
-            uuid.UUID(str(home_uuid))
+            uuid.UUID(str(room_uuid))
         except ValueError:
             problems.append(
-                f"{SETTING_DEFAULT_HOME_UUID} is {home_uuid!r}, which is not "
-                f"a uuid. It is carried as a string and compared as one, so "
-                f"a value that is not one matches no room at all."
+                f"{setting} is {room_uuid!r}, which is not a uuid. It is "
+                f"carried as a string and compared as one, so a value that "
+                f"is not one matches no room at all."
             )
 
     # Not a setting of ours, but the same question: is this instance

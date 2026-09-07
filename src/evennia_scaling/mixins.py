@@ -14,6 +14,7 @@ from .config import (
     get_default_home_shard,
     get_shards,
     get_start_location_shard,
+    get_start_location_uuid,
 )
 from .log import scaling_log
 
@@ -160,13 +161,15 @@ class ScalingCharacterMixin(ArchivableCharacterMixin):
     )
 
     #: The other half of the pair: which room, in the world of the shard
-    #: above. No default — a room key means nothing without a shard beside
-    #: it, so there is nothing useful to fall back to at read time.
+    #: above. Defaults to the start location's room, so a character created
+    #: any way at all is somewhere real and nothing has to hook chargen.
     #:
     #: Its shape is checked and its meaning is not: the room it names is on
     #: another instance, so the only question answerable here is whether it
     #: is a uuid.
-    current_room_uuid = _RoomUuidProperty(default=None, strattr=True)
+    current_room_uuid = _RoomUuidProperty(
+        default=get_start_location_uuid, strattr=True
+    )
 
     #: Where the character lives, as the same pair. The shard defaults to
     #: the game's home shard; the room does not default, and its absence is
