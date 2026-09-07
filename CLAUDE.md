@@ -84,6 +84,12 @@ starting room. See [docs/progress.md](docs/progress.md).
 The current direction is that this library replaces it — see
 [docs/interoperability.md](docs/interoperability.md).
 
+- **A database alias of this library's own.** The ticket table is in the consumer's game database,
+  deliberately. A library takes an alias when its data has to outlive the game database or be read by
+  more than one instance, and a ticket is neither — one instance writes and reads it seconds apart, and
+  after a wipe there is no handoff still in flight. `TK-05` pins it and the full argument is in
+  `models.py`; do not "fix" it into an alias.
+
 Everything else is decided as concrete questions arise, by applying the principles above.
 
 ## Working conventions
@@ -139,6 +145,9 @@ evennia-scaling/
 │   ├── INDEX.md
 │   ├── progress.md
 │   ├── test-plan.md
+│   ├── commands.md            # the commands changed, and the rule behind them
+│   ├── installing.md          # what a consumer configures
+│   ├── where-state-changes.md # account on the router, character on the shard
 │   ├── interoperability.md
 │   └── archive/               # historical context, not authoritative
 ├── src/
@@ -148,7 +157,9 @@ evennia-scaling/
 │       ├── config.py          # settings, each behind an accessor
 │       ├── mixins.py          # the typeclass mixins a consumer adds
 │       ├── handoff.py         # leaving an instance, and reporting the outcome
-│       ├── commands.py        # `ooc`, replaced so a shard sends you home
+│       ├── commands.py        # the account-command overrides, `ooc` included
+│       ├── channel_command.py # `channel`, less the switches that write account state
+│       ├── at_server_startstop.py  # installs the channel override after `evennia._init()`
 │       ├── models.py          # the ticket row, in the game database
 │       ├── migrations/
 │       ├── tickets.py         # minting, storing, sweeping and redeeming

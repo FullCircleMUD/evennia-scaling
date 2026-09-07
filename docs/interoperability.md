@@ -1,8 +1,6 @@
 # Interoperability
 
-This library against every `evennia-*` sibling library in `libraries/`. The `fcm-*` libraries are
-deliberately absent: they are coupled to FullCircleMUD's game concepts and are not offered for outside
-consumption, so a reader deciding what to co-install with this library cannot install them anyway.
+This library against every sibling library in `libraries/`.
 
 Each section names the relationship — **hard dependency**, **optional integration**, or **no
 coupling** — followed either by the constraints that apply or by an explicit clearance stating *why* it
@@ -156,3 +154,22 @@ tool it uses.
 
 **No coupling.** It reads YAML. Nothing this library does involves a file, and nothing it moves came
 from one.
+
+## fcm-telemetry-spawn
+
+**No coupling.** Neither imports the other, and neither depends on the other.
+
+As it is built today it does not work in a deployment of several instances. The intent is that it will
+in time; arranging that is its work, not this library's.
+
+## fcm-xrpl
+
+**No coupling, and a possible answer to a problem this library leaves open.** Neither imports the
+other. This library runs standalone.
+
+A transfer carries the character and nothing it is holding — the reason is in the `evennia-equipment`
+section above. That leaves a game needing a record of what a character owns that is not an Evennia
+object, and a way to put those items back once the character has been rebuilt from the archive.
+
+`fcm-xrpl` is one answer to that, holding ownership outside any single instance's database. It is one
+answer among several a consumer could build, not a dependency and not a requirement.
