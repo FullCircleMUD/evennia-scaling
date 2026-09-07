@@ -2,6 +2,55 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-06 — a character arrives where they left off
+
+195 tests. Proven live: a new character appears at the default home, walks to another room, goes out of
+character to the router and comes back to the room they were standing in.
+
+- **A room's identity is a uuid its world source assigns.** `ScalingRoomMixin` adds
+  `scaling_room_uuid` and never mints one — a room minting its own would mint a fresh one on every
+  world rebuild, which is the moment the identity has to hold still. `evennia-world-builder` already
+  holds the matching value as an author-supplied `entity_id`.
+- **A character's two location halves hold uuids**, `current_room_uuid` and `home_room_uuid`, checked
+  by one property that parses without canonicalising. Stored as written, matched case-insensitively —
+  world-builder keeps the author's string, and a uuid folded on this side would stop matching it.
+- **`find_room_by_uuid`** turns one back into a room. Two rooms carrying one uuid raises rather than
+  picking, because picking silently stands a character somewhere the game does not think they are.
+- **`at_post_move` keeps the pair true**, stamping the room and this instance's shard as a character
+  walks. Nothing had, so a character returned to wherever they were last stamped. It calls `super()`
+  first: `DefaultCharacter` overrides the same hook to make them look at the room, and `SH-22` pins
+  that.
+- **Walking into a room with no uuid keeps the last recorded one**, and
+  `SCALING_KEEP_LOCATION_IN_UNMARKED_ROOM` turns that off. A room without one is a room the deployment
+  cannot reproduce — a procedural dungeon, say — and sending someone home for losing their connection
+  in one punishes them for their connection.
+- **Placement is three resolutions, then failure**: where they are, where they live, the deployment's
+  default home. Rows two and three rewrite the pair and raise `RoomOnAnotherShard`, which is what makes
+  the cascade advance one row per hop and terminate. Row one rewrites nothing and logs a breach —
+  leaving stamps the destination now, so arriving on a shard you do not belong on cannot happen.
+- **`SCALING_DEFAULT_HOME_UUID`** replaces `DEFAULT_HOME` in that last row. A dbref names nothing after
+  a rebuild, and `DEFAULT_HOME` exists on every instance — so falling back to it locally is how a
+  beginner ends up in the advanced shard's Limbo.
+- **A superuser skips all of it and goes to Limbo.** They can `tel` anywhere the moment they arrive, and
+  one known room beats being routed by rules written for players. It is also what makes a shard whose
+  rooms carry no uuids reachable by the person who can go and fix that.
+- **The transfer is issued by the session override, not by placement.** Placement runs before the
+  session is logged in, so moving it from there would hand it away while the caller is about to set
+  `uid` on it.
+
+Accepted rather than fixed: a bare `ic` on the router does not work, because `_last_puppet` there names
+a character the transfer deleted. Naming the character is the right habit once an account has more than
+one.
+
+Not built: nothing gives a new character a starting *room*, only a starting shard — so every new
+character begins at the default home.
+
+**A fixture trap that cost an hour.** `create_object(key="Somewhere")` returns `None`: with no typeclass
+it resolves `BASE_OBJECT_TYPECLASS`, a gamedir module the suite has not got, and it fails quietly. Every
+object was left with Evennia's `DEFAULT_HOME`, a `#2` that is not in a fresh test database, and SQLite
+refused the dangling key at teardown. It surfaced only when a new test class changed which one created
+the first object.
+
 ## 2026-09-06 — the rule was never "no superusers"
 
 157 tests.

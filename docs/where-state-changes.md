@@ -34,6 +34,12 @@ primary key, which anything outside the game holding that key is then naming a r
 missing from the roster are restored, because a character that never came home from a shard is only in
 the archive.
 
+**Where a character is travels as a uuid, not a dbref.** A primary key names a row in one database and
+nothing in the next, and does not survive a world rebuild either. So a room carries a
+`scaling_room_uuid` assigned by the game's world source, a character records the one it is standing in,
+and the arriving instance resolves that back to a room of its own. The character's shard is stamped
+beside it, because a room uuid means nothing without knowing which world it is in.
+
 **Account-changing commands are out of character only.** Nine of Evennia's defaults change account
 state. Seven are locked; `channel` and `nick` keep working in character with the parts that write to
 the account held back. See [commands.md](commands.md).

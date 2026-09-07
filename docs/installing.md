@@ -116,6 +116,41 @@ Listing archive's mixin *first* cannot work at all — Python refuses a base cla
 subclass, and the module fails to import. The boot check translates that into a message saying which
 line to change; unhandled, the interpreter's own MRO complaint says nothing about what to do.
 
+### Rooms
+
+**The room typeclass is not checked at boot, and a room without the mixin costs a player their
+location.** A character's location travels between instances as the room's uuid, so a room with no uuid
+cannot be returned to — the character arrives at whichever room the destination instance has as its
+`DEFAULT_HOME`.
+
+That is silent. Nothing is logged, no transfer fails, and every character simply appears in the same
+place: a symptom nobody traces back to a missing mixin. So it is the one thing here worth checking
+yourself.
+
+```python
+from evennia.objects.objects import DefaultRoom
+
+from evennia_scaling.mixins import ScalingRoomMixin
+
+
+class Room(ScalingRoomMixin, DefaultRoom):
+    pass
+```
+
+Point `BASE_ROOM_TYPECLASS` at it as usual.
+
+**The uuid is assigned, never minted.** The mixin adds `scaling_room_uuid` and leaves it `None`; your
+world source fills it in. A room that mints its own would mint a fresh one on every world rebuild, which
+is the moment the identity has to hold still.
+
+A game built with `evennia-world-builder` already has the value — each entity carries an author-supplied
+`entity_id`, reproduced on every deploy. Any other world source supplies one however it likes; this
+library only reads it.
+
+Rooms a character can never be sent to do not need one. `None` is a valid state, and the boot is not
+refused over it — unlike the account and character typeclasses, where a missing mixin means a transfer
+cannot happen at all.
+
 **Why it is a refusal rather than a warning.** An archive identity is minted when an object is created
 and never reissued, so a character made without the mixin can never be archived — and that cannot be
 corrected afterwards. Left to run, it surfaces at transfer time, in front of a player, on a path that
@@ -134,6 +169,7 @@ is a different room on each. **These settings supply the missing half of the key
 ```python
 SCALING_START_LOCATION_SHARD = "shard0"
 SCALING_DEFAULT_HOME_SHARD = "shard0"
+SCALING_DEFAULT_HOME_UUID = "9c2f8b6d-4a71-4e35-b0c8-7d1e2a5f3049"
 ```
 
 A room is addressed as a pair — the shard, then the room on it:
@@ -141,15 +177,21 @@ A room is addressed as a pair — the shard, then the room on it:
 | Room | Which shard | Which room |
 |---|---|---|
 | Where a new character starts | `SCALING_START_LOCATION_SHARD` | `START_LOCATION` |
-| Where a character falls back to | `SCALING_DEFAULT_HOME_SHARD` | `DEFAULT_HOME` |
+| Where a character falls back to | `SCALING_DEFAULT_HOME_SHARD` | `SCALING_DEFAULT_HOME_UUID` |
 
 The shard cannot be worked out at runtime. Asking over the bus which instance holds room #5 would get
 several answers, all of them correct.
 
+**The fallback room is named by uuid, not by `DEFAULT_HOME`.** A dbref names nothing after a world
+rebuild, and `DEFAULT_HOME` exists on every instance — so falling back to it locally would put a
+character in whichever shard's Limbo they happened to be standing on. Out of the box it is `#2`, a
+technical room for the contents of destroyed objects rather than anywhere a game wants a player to wake
+up. Give the setting the `scaling_room_uuid` of a real room in your world; this library stops reading
+`DEFAULT_HOME` entirely, and Evennia goes on using it for its own purposes.
+
 **The two rooms do different jobs.** `START_LOCATION` places a character once, at creation. From then
-on it is the home room that matters, so a character whose location goes away falls back to
-`DEFAULT_HOME`. That is why they are two settings and not one — and why a game is free to put them on
-different shards.
+on it is the home room that matters, so a character whose location goes away falls back to the default
+home. That is why they are separate settings — and why a game is free to put them on different shards.
 
 Neither has a default and both must name a shard in `SCALING_SHARDS`. A guess would send every new
 character to a real instance that simply is not the one intended, and nothing about that failure looks
@@ -193,8 +235,10 @@ works.
 | `SCALING_ROUTER_ID` | Yes, no default | The instance that runs the portal and acts as the OOC area for the game. Must not be in `SCALING_SHARDS` |
 | `SCALING_SHARDS` | Yes, no default | Every shard in the deployment, as a list or tuple of instance ids. A character's `current_shard` is validated against it |
 | `SCALING_START_LOCATION_SHARD` | Yes, no default | Which shard holds `START_LOCATION`. Also what `current_shard` defaults to |
-| `SCALING_DEFAULT_HOME_SHARD` | Yes, no default | Which shard holds `DEFAULT_HOME` |
+| `SCALING_DEFAULT_HOME_SHARD` | Yes, no default | Which shard holds the default home room |
+| `SCALING_DEFAULT_HOME_UUID` | Yes, no default | That room's `scaling_room_uuid`. Checked at boot for being set and for parsing as a uuid |
 | `SCALING_TICKET_LIFETIME_SECONDS` | Defaults to `10` | How long a stored ticket stays redeemable |
+| `SCALING_KEEP_LOCATION_IN_UNMARKED_ROOM` | Defaults to `True` | Whether walking into a room with no uuid keeps the last recorded room or clears it |
 
 ## Settings the sibling libraries need
 

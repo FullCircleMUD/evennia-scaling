@@ -24,6 +24,8 @@ Behaviour is agreed here first, before any test or code — see
 | `IC` | Going in character |
 | `LK` | Locking account changes to out of character |
 | `OC` | Going out of character |
+| `PL` | Placement — putting an arriving character somewhere in this instance's world |
+| `RM` | The room mixin — a room's identity across instances |
 | `SH` | Where a character is in the game world |
 | `SV` | Startup validation of the consumer's typeclasses |
 | `TK` | Tickets — what lets an arriving session be recognised |
@@ -132,6 +134,26 @@ guess which instance holds a room; or naming something outside `SCALING_SHARDS`,
 runs under sends characters to an instance that never answers. Neither shows up as a misconfiguration
 at the point it bites — the first character created is already in front of a player.
 
+**`SCALING_DEFAULT_HOME_UUID` names the one room a character can always be sent to**, and it is the room
+half of the pair `SCALING_DEFAULT_HOME_SHARD` opens. Required, because no uuid the library invented would
+name anything.
+
+Checked twice: that it is set, and that it parses as a uuid. The second matters because the value is
+carried as a string and compared as one — a truncated or hand-mangled uuid satisfies every other test
+and simply matches nothing, so the last resort in the placement cascade silently has no room in it.
+
+Not checked here: whether it names a room that exists. That room is on one shard and every other
+instance boots without it, so the question can only be asked where the answer means something — see
+`PL-09`.
+
+**`SCALING_KEEP_LOCATION_IN_UNMARKED_ROOM` has a safe default, so it is not checked at boot.** It says
+what a character's recorded location becomes when they walk into a room with no uuid — see `SH-19` and
+`SH-20` for the two behaviours. It defaults to keeping the last recorded room, which is the answer that
+does not punish a player for losing their connection somewhere the game cannot reproduce.
+
+It is also the default a consumer can most easily reverse. Clearing after `super().at_post_move()` is a
+line; restoring a value the library has already cleared means reading it first.
+
 | ID | Case | Test function |
 |---|---|---|
 | CF-01 | The ticket lifetime defaults to ten seconds when the setting is absent | test_cf_01_the_ticket_lifetime_defaults_to_ten_seconds |
@@ -146,6 +168,9 @@ at the point it bites — the first character created is already in front of a p
 | CF-10 | A world anchor naming something outside `SCALING_SHARDS` is refused, naming the roster | test_cf_10_a_world_anchor_outside_the_roster_is_refused |
 | CF-11 | An unset `SCALING_ROUTER_ID` is refused, naming the setting | test_cf_11_an_unset_router_id_is_refused |
 | CF-12 | A `SCALING_ROUTER_ID` that is also in `SCALING_SHARDS` is refused | test_cf_12_a_router_id_in_the_roster_is_refused |
+| CF-13 | `SCALING_KEEP_LOCATION_IN_UNMARKED_ROOM` defaults to keeping the last recorded room | test_cf_13_keeping_the_location_in_an_unmarked_room_is_the_default |
+| CF-14 | An unset `SCALING_DEFAULT_HOME_UUID` is refused, naming the setting | test_cf_14_an_unset_default_home_uuid_is_refused |
+| CF-15 | A `SCALING_DEFAULT_HOME_UUID` that does not parse as a uuid is refused, naming the value | test_cf_15_a_default_home_uuid_that_is_not_a_uuid_is_refused |
 
 ### AC — the account mixin
 
@@ -315,23 +340,47 @@ here.
 
 #### Where a character is, as a pair
 
-A shard alone does not say where a character stands. **`current_shard` and `current_room_ref` are one
-composite key** — which instance, then which room in that instance's database.
+A shard alone does not say where a character stands. **`current_shard` and `current_room_uuid` are one
+composite key** — which instance, then which room in that instance's world.
 
-`current_room_ref` has no default and reads as `None` until something sets it. A room key is meaningless
-without a shard beside it, so there is no useful value to fall back to at read time; the pair is
-completed at the moment of use instead.
+`current_room_uuid` holds the room's `scaling_room_uuid`, not a dbref. A dbref names a row in one
+database and means nothing in the next, so it cannot survive either a transfer or a world rebuild. The
+uuid is assigned to the room by the consumer and reproduced whenever the world is redeployed, so it
+still names the same room after either.
 
-Nothing validates the room key. It names a row in a database this instance cannot see, so the only check
-available is that a value is present.
+It has no default and reads as `None` until something sets it. A room key is meaningless without a shard
+beside it, so there is no useful value to fall back to at read time; the pair is completed at the moment
+of use instead.
+
+**Its shape is checked; its meaning is not.** Which uuids exist is the consumer's world, and the room it
+names is on another instance, so there is no way to ask whether it names anything. What can be checked
+is that it is a uuid at all — a dbref or a room name in this field is a mistake that would otherwise
+surface as a character arriving in the wrong place.
+
+**Parsing is the check, and the value is stored as it was given.** `at_set` returns it unchanged, the
+same as `current_shard` does — the check says whether it is a uuid, and says nothing about how it should
+be written.
+
+Storing a canonicalised form was the alternative and it is wrong here. `evennia-world-builder` holds the
+matching identity — an author-supplied `entity_id` on the room — and stores the string as written,
+absorbing the variation at lookup with `db_key__iexact`. A uuid canonicalised on this side would stop
+matching a room whose `entity_id` was written in uppercase. Sibling libraries agree on the shape: a
+uuid is a `str` here, never a `uuid.UUID`, so the value that goes in is the value that comes out.
+
+**A non-string is refused**, world-builder's rule for the same identity. `uuid.UUID` would happily
+accept a `uuid.UUID` back, and letting one in means half the stored values are objects that compare
+unequal to every string beside them.
+
+**`None` is accepted here, unlike `current_shard`.** Unset is a real state for a room key: it is what a
+character has before anything stamps one, and what the cascade's third step leaves behind.
 
 **A character carries two pairs, and there is a third behind them.**
 
 | | Shard | Room |
 |---|---|---|
-| Where they are | `current_shard` | `current_room_ref` |
-| Where they live | `home_shard` | `home_room_ref` |
-| The one safe place in the game | `SCALING_DEFAULT_HOME_SHARD` | `DEFAULT_HOME` |
+| Where they are | `current_shard` | `current_room_uuid` |
+| Where they live | `home_shard` | `home_room_uuid` |
+| The one safe place in the game | `SCALING_DEFAULT_HOME_SHARD` | — |
 
 **`ensure_location_for_transfer()` walks that cascade and returns the shard.** Either half of a pair
 being unusable — a shard outside `SCALING_SHARDS`, or no room key — makes the whole pair unusable,
@@ -349,6 +398,12 @@ Neither home attribute has a default. One at that step would make the cascade ne
 now true, and the arrival reads one place for it. Falling back to the default home is a recovery, not a
 decision that this is where the character lives from now on.
 
+**The third step writes the shard and leaves the room half unset.** There is no room uuid to write: the
+one safe place is `DEFAULT_HOME`, a dbref belonging to whichever instance is asked, and putting that in
+a field that holds uuids would leave the arrival unable to tell which kind of value it is holding. An
+unset room half is also the more honest claim — this cascade knows which shard, and does not know the
+room. The arrival places them at its own `DEFAULT_HOME`.
+
 The shard half of a check looks redundant, since `at_set` refuses anything outside the roster — but
 `.db` bypasses that, and a shard removed from the roster after a character was stamped goes stale the
 same way.
@@ -356,6 +411,9 @@ same way.
 **One property serves both shards.** "Is this a shard in this deployment" is not specific to the current
 one, so `current_shard` and `home_shard` are the same `_ShardProperty` declared twice. It names itself in
 its refusal, reading its own key off the descriptor rather than hardcoding one.
+
+**And one serves both room halves**, for the same reason and in the same way. "Is this a uuid" is not
+specific to where the character is or where they live.
 
 `home_shard` defaults to `SCALING_DEFAULT_HOME_SHARD` — the game's home shard is the sensible home for a
 character that has not been given one. The room half has no default, and its absence is what sends the
@@ -367,6 +425,37 @@ the two drift apart the moment a character walks anywhere.
 
 The arrival can therefore assume both halves are present, because the sending side guaranteed it.
 
+#### Keeping the pair true as a character walks
+
+The pair is stamped on `at_post_move`, which Evennia calls after a move has completed and again at
+creation with no source location — so a character built in a room is stamped without a special case.
+
+**It is the only seam that fits.** `at_object_receive` is the room's hook, and rooms have no business
+writing to characters. Overriding the `location` property would catch a bare assignment too, but that
+descriptor is Evennia's and replacing it is fragile. What `at_post_move` misses is exactly that bare
+assignment — `character.location = room` — which is what the arrival does, and there the uuid is
+already known because it is what the room was resolved from.
+
+**`DefaultCharacter` overrides this hook already**, to make the character look at the room it arrived
+in. Ours calls `super()` first, and `SH-22` pins that: this is the inherited-behaviour case the section
+above has been holding open, and it is the one a player notices immediately.
+
+**The room is asked, not tested for the mixin.** `getattr(location, "scaling_room_uuid", None)` — a room
+that exposes one has one, and whether it got there from `ScalingRoomMixin` is not this library's
+business.
+
+**Nothing is stamped on a router.** A character is never *in* the router, and the router's id is by
+definition not in `SCALING_SHARDS`, so stamping there would raise on the shard half — at character
+creation, which is a router operation.
+
+**The shard half is this instance's `MULTIPLEX_INSTANCE_ID`**, read through multiplex's own accessor
+rather than a second setting of ours. `CF-06` onward already require `SCALING_SHARDS` to be spelled
+exactly as each instance's id, so a setting of our own would only give the two somewhere to disagree.
+
+**The shard half is never cleared.** `_ShardProperty` refuses `None`, and there is nothing to clear
+anyway: a character standing in an unrecorded room is still on this shard. An incomplete pair is what
+the cascade already reads as unusable, so the room half alone carries the meaning.
+
 **The mixin carries `ArchivableCharacterMixin`**, so a consumer adds one mixin to their character class
 rather than two.
 
@@ -374,10 +463,10 @@ rather than two.
 could break, not what its dependencies do** — `evennia-archive` tests its own mixins, and duplicating
 that here would be testing someone else's code through ours.
 
-The case to add, when it applies: **wherever this mixin overrides a method it inherits from an archive
-mixin, a case pins that the override has not lost the behaviour the archive version provided.** That is
-the change an inherited-behaviour test can catch and the archive's own suite cannot, because its suite
-knows nothing about this subclass. No override exists today.
+The case to add, when it applies: **wherever this mixin overrides a method it inherits, a case pins that
+the override has not lost the behaviour the inherited version provided.** That is the change an
+inherited-behaviour test can catch and the base class's own suite cannot, because its suite knows
+nothing about this subclass. `SH-22` is the one such case today, over `at_post_move`.
 
 | ID | Case | Test function |
 |---|---|---|
@@ -387,13 +476,208 @@ knows nothing about this subclass. No override exists today.
 | SH-04 | `None` is refused, saying what it means rather than reading as a typo | test_sh_04_refuses_none |
 | SH-05 | A character never assigned a shard reads as `SCALING_START_LOCATION_SHARD` | test_sh_05_a_character_never_assigned_reads_as_the_start_shard |
 | SH-06 | `ScalingCharacterMixin` extends `ArchivableCharacterMixin`, so one mixin on the character satisfies both | test_sh_06_carries_the_archive_mixin |
-| SH-07 | `current_room_ref` is stored as an Attribute, so it survives the archive round trip | test_sh_07_the_room_ref_is_stored_as_an_attribute |
-| SH-08 | A character never assigned one reads as `None` | test_sh_08_an_unassigned_room_ref_reads_as_none |
+| SH-07 | `current_room_uuid` is stored as an Attribute, so it survives the archive round trip | test_sh_07_the_room_uuid_is_stored_as_an_attribute |
+| SH-08 | A character never assigned one reads as `None` | test_sh_08_an_unassigned_room_uuid_reads_as_none |
 | SH-09 | `ensure_location_for_transfer` leaves a character with both halves alone | test_sh_09_a_complete_pair_is_left_alone |
 | SH-10 | A character with a broken location and a usable home is sent home | test_sh_10_a_broken_location_falls_back_to_home |
 | SH-11 | The home pair is stored as Attributes, and `home_shard` refuses a shard outside the roster | test_sh_11_the_home_pair_is_stored_and_checked |
-| SH-12 | A character with neither a usable location nor a usable home gets the default home | test_sh_12_neither_pair_falls_back_to_the_default_home |
-| SH-13 | The resolved location is written back; the home room key is not | test_sh_13_the_home_room_is_not_written_back |
+| SH-12 | A character with neither a usable location nor a usable home gets the default home shard, and the room half is left unset rather than filled with a dbref | test_sh_12_neither_pair_falls_back_to_the_default_home_shard |
+| SH-13 | The resolved location is written back; the home room uuid is not | test_sh_13_the_home_room_is_not_written_back |
+| SH-14 | A well-formed uuid string is accepted and reads back exactly as it was given | test_sh_14_a_room_uuid_is_stored_as_given |
+| SH-15 | A string that is not a uuid is refused, naming the attribute it was set on | test_sh_15_refuses_a_value_that_is_not_a_uuid |
+| SH-16 | A `uuid.UUID` object is refused — a uuid travels as a string between these libraries | test_sh_16_refuses_a_uuid_object |
+| SH-17 | `None` is accepted, because unset is a real state for a room key | test_sh_17_a_room_uuid_accepts_none |
+| SH-18 | Moving into a room with a uuid stamps both halves — that uuid, and this instance's id | test_sh_18_a_move_stamps_the_pair |
+| SH-19 | Moving into a room with no uuid leaves the pair alone, by default | test_sh_19_an_unmarked_room_leaves_the_pair_alone |
+| SH-20 | With `SCALING_KEEP_LOCATION_IN_UNMARKED_ROOM` off, the room half is cleared and the shard is still stamped | test_sh_20_an_unmarked_room_can_clear_the_room_half |
+| SH-21 | On a router nothing is stamped — a character is never in the router, and its id is not a shard | test_sh_21_a_router_stamps_nothing |
+| SH-22 | `super().at_post_move` still runs, so the character still sees the room it moved into | test_sh_22_the_inherited_look_still_happens |
+
+### PL — placement
+
+`place_in_world(character)` puts an arriving character somewhere in this instance's world. The archive
+strips location, home and every other reference on the way in, so a character arrives standing nowhere
+at all.
+
+**Three resolutions, then failure.** Each names a shard and a room, and each asks the same two questions
+in the same order: is that shard this one, and does that room resolve here.
+
+| | Shard | Room |
+|---|---|---|
+| 1 | `current_shard` | `current_room_uuid` |
+| 2 | `home_shard` | `home_room_uuid` |
+| 3 | `SCALING_DEFAULT_HOME_SHARD` | `SCALING_DEFAULT_HOME_UUID` |
+
+**This is not `ensure_location_for_transfer` again.** The sender checks *presence* — is there a shard in
+the roster and a room key beside it. The arrival checks *resolvability* — does that uuid name a room in
+this database, which no sender can know. Same shape, different question, and both are needed.
+
+**All three rows are one lookup.** The third is a setting rather than something on the character, but it
+is a room uuid like the other two and resolves through `find_room_by_uuid` like the other two.
+
+**Evennia's `DEFAULT_HOME` is not this.** It is a dbref, so it names nothing after a rebuild; it exists
+on every instance, so falling back to it locally puts the beginner in the advanced shard's Limbo — the
+behaviour the `SH` section rejects; and out of the box it is `#2`, a technical room for the contents of
+destroyed objects rather than anywhere a game wants a player to wake up. This library stops reading it.
+Evennia goes on using it for its own purposes.
+
+**There is no fourth row.** If the default home uuid does not resolve on its own shard the deployment is
+broken, and a floor that quietly drops the player into Limbo would hide it.
+
+#### A superuser goes to Limbo
+
+**A superuser is placed at this instance's `DEFAULT_HOME`, and the cascade does not run.** Not a row in
+it and not a fallback after it — a branch before it.
+
+A superuser is not playing the game the way the rules above are written for. They can `tel` anywhere the
+moment they arrive, so being routed by where their character *was* buys them nothing, and always
+appearing in one known room is worth more. It is also what makes an instance reachable at all: a shard
+whose rooms carry no uuids yet — a fresh one, or one whose world has not been built — has nowhere the
+cascade can land anybody, and the person who needs to get in and fix that is exactly this one.
+
+**`DEFAULT_HOME` rather than a uuid**, and this is the one place a dbref is right. It is resolved on the
+instance already being stood on, so it never has to mean anything across a database — which is the whole
+reason the rest of this uses uuids. Evennia's initial setup makes the room, so it is there on every
+instance.
+
+**`is_superuser`, not `is_instance_root`.** `#1` never travels, so any superuser arriving here is
+already not `#1`, and the plain check says what it means.
+
+**Their location pair is left alone.** Nothing resolved, so there is nothing to record; it keeps what it
+held and restamps on their first move like anyone's.
+
+**If `DEFAULT_HOME` does not resolve, object `#2` is tried.** Evennia's initial setup makes Limbo, and it
+makes it second — so on any instance it set up, `#2` is Limbo. Where `DEFAULT_HOME` is at its own default
+the two are the same lookup and the fallback never fires; it fires only where an operator repointed
+`DEFAULT_HOME` at a room that has since gone, and there `#2` is a better answer than sending the one
+person who can fix it back to the router.
+
+Nothing checks that `#2` is *named* Limbo, or that it is a room at all. This demo renames shard0's to
+`Shard0_Limbo`, and a game is free to call its start room anything — a name is not what makes it the
+room. Getting `#2` to be something else takes deliberate work, and the cost of it is a superuser standing
+inside whatever that is, one `tel` from anywhere they meant to be.
+
+`PlacementFailed` still applies if neither resolves, which means the instance has no Limbo at all.
+
+#### When the shard is not this one
+
+All three rows raise `RoomOnAnotherShard`, naming it.
+
+**Rows 2 and 3 rewrite the location pair to what they resolved before raising**, and that is what makes
+the cascade terminate: each hop advances it one row, so the next instance starts from where this one got
+to rather than from the top. Without the rewrite the same instance resolves the same unreachable pair
+forever.
+
+**Row 1 rewrites nothing**, because it has resolved nothing — the pair is already right and it is the
+session that is in the wrong place. It terminates in one hop: the destination's row 1 tests equal and
+places them.
+
+**Row 1 is also a breach, and is logged as one.** Leaving stamps `current_shard` with the destination
+(see `HO-18`), so a session that arrives where the character's own shard is not this one cannot be
+produced by any path here. Falling through to the home pair instead would route a player home over what
+is really a delivery fault, and say nothing about it.
+
+**The transfer is not issued here.** `place_in_world` runs inside `load_sync_data`, before the session is
+logged in; moving the session from here would hand it away while the caller is still about to set `uid`
+and `logged_in` on it. So the exception carries what a transfer needs and rises to the frame that owns
+the session. See `SS-24`.
+
+#### When nothing resolves
+
+`PlacementFailed`, naming all three pairs that were tried. The session is not admitted, it goes to the
+router, and it is logged as an error — a deployment where a character has no reachable location at all
+is broken, not unlucky.
+
+#### A duplicate uuid is not routed around
+
+`DuplicateRoomUuid` from the finder is left to rise rather than caught and treated as "did not resolve".
+Falling through would place the character somewhere plausible and leave two rooms claiming one identity
+in the world source, unnoticed. The player is told to report it — the one failure here they can do
+anything about.
+
+| ID | Case | Test function |
+|---|---|---|
+| PL-01 | A character whose current pair resolves here is placed in that room | test_pl_01_the_current_pair_is_placed |
+| PL-02 | A `current_shard` that is not this shard raises `RoomOnAnotherShard` naming it, rewrites nothing, and is logged as a breach | test_pl_02_another_shards_current_pair_is_forwarded |
+| PL-03 | A current room uuid that resolves to nothing here falls through to the home pair | test_pl_03_an_unresolvable_current_room_falls_through |
+| PL-04 | A home pair on another shard rewrites the location pair to it and raises `RoomOnAnotherShard` | test_pl_04_a_home_on_another_shard_is_forwarded |
+| PL-05 | A home pair that resolves here places the character and writes the location pair back, leaving the home pair alone | test_pl_05_a_home_on_this_shard_is_placed |
+| PL-06 | A home room uuid that resolves to nothing here falls through to the default home | test_pl_06_an_unresolvable_home_room_falls_through |
+| PL-07 | A default home on another shard rewrites the pair to it and raises `RoomOnAnotherShard` | test_pl_07_a_default_home_on_another_shard_is_forwarded |
+| PL-08 | A default home on this shard places the character in the room its uuid names | test_pl_08_the_default_home_is_placed |
+| PL-09 | Nothing resolving anywhere raises `PlacementFailed`, naming all three pairs | test_pl_09_nothing_resolvable_raises |
+| PL-10 | A duplicate room uuid raises rather than falling through to the next row | test_pl_10_a_duplicate_uuid_is_not_routed_around |
+| PL-11 | A superuser is placed at `DEFAULT_HOME` whatever their location pair says, and the cascade does not run | test_pl_11_a_superuser_goes_to_the_default_home |
+| PL-12 | A superuser's location pair is left alone — nothing resolved, so there is nothing to record | test_pl_12_a_superusers_pair_is_left_alone |
+| PL-13 | A `DEFAULT_HOME` that does not resolve falls back to object `#2` | test_pl_13_a_superuser_falls_back_to_object_two |
+| PL-14 | Neither resolving raises `PlacementFailed` — the instance has no Limbo at all | test_pl_14_a_superuser_with_no_limbo_raises |
+
+### RM — the room mixin
+
+A character's location survives a transfer as a room uuid, and something has to carry the other end of
+it. `ScalingRoomMixin` adds `scaling_room_uuid` to a room typeclass, and that is the whole of it.
+
+**The uuid is assigned, never minted.** That is the point of the mixin rather than an omission from it.
+A room minting its own identity would mint a fresh one every time the world was rebuilt, which is
+exactly when the identity has to hold still — the dbrefs change on a rebuild and this is what survives
+them. So it is the consumer's world source that supplies the value, and a room created without one has
+none.
+
+A game using `evennia-world-builder` already has the value: `entity_id`, author-supplied in YAML and
+reproduced on every deploy. A game building its world another way assigns it however it likes. Either
+way this library only reads it.
+
+**Rooms are never archived**, so this mixin does not carry an archive one and the attribute is not
+there to survive a round trip. It is an `AttributeProperty` because a typeclass cannot add a column.
+
+**Nothing checks at boot that the room typeclass carries it**, though `BASE_ROOM_TYPECLASS` exists and
+could be checked exactly as `SV` checks the other two. The difference is what a missing mixin costs. A
+character typeclass without one produces characters that can never be archived, so the transfer breaks
+outright, in front of a player, on a path that has already archived them somewhere else — worth refusing
+to start over. A room typeclass without one transfers fine and every character lands in the destination's
+`DEFAULT_HOME`. Degraded, not broken, and a room with no uuid is a normal room besides.
+
+The cost of that choice is that the degradation is silent: nothing is logged, no transfer fails, and
+every character appears in the same place. It is called out in
+[installing.md](installing.md) § Rooms, which is where a consumer would be reading.
+
+**The value is checked by the same `_RoomUuidProperty` the character's two halves use**, so `SH-14` to
+`SH-17` cover the rule itself. `RM-03` covers only that this attribute is wired to it — repeating the
+refusals here would test one class through two doors.
+
+#### Finding a room by its uuid
+
+`find_room_by_uuid(room_uuid)` is the other direction: a uuid in, the live room out. A module-level
+function rather than a method, because the caller has a uuid and no room — the same reason
+`is_instance_root` is one.
+
+**It returns the room or `None`.** A uuid nothing carries is a normal case: the world was redeployed
+without that room, or the character's last location was somewhere this instance does not have. A `None`
+uuid returns `None` without querying, so a caller holding an unstamped character does not have to guard.
+
+**Matching ignores case.** The value is stored as the consumer wrote it, so the room's and the
+character's copies can differ in case while naming the same uuid — see the `SH` section on why neither
+is canonicalised.
+
+**Two rooms carrying the same uuid raise `DuplicateRoomUuid`.** There is no right answer to pick from,
+and picking one silently means a character standing in a room that is not where the game thinks they
+are. The exception names both dbrefs, because fixing it means editing the world source and the operator
+needs to know which two entries collided.
+
+Its own exception rather than `PlacementFailed`: this function is callable by a consumer for their own
+reasons, and an exception about placement would say nothing about what went wrong. Translating it is the
+arrival's job.
+
+| ID | Case | Test function |
+|---|---|---|
+| RM-01 | `scaling_room_uuid` is stored as an Attribute under that key | test_rm_01_the_room_uuid_is_stored_as_an_attribute |
+| RM-02 | A room created without one reads as `None` — the mixin never mints | test_rm_02_a_new_room_has_no_uuid |
+| RM-03 | The attribute is the checked property, so a value that is not a uuid is refused | test_rm_03_refuses_a_value_that_is_not_a_uuid |
+| RM-04 | `find_room_by_uuid` returns the live room carrying that uuid | test_rm_04_finds_the_room_carrying_the_uuid |
+| RM-05 | A uuid no room carries returns `None` | test_rm_05_an_unknown_uuid_returns_none |
+| RM-06 | A `None` uuid returns `None` without a query — an unrecorded location is normal | test_rm_06_no_uuid_returns_none |
+| RM-07 | Matching ignores case, so a room whose uuid was written in uppercase is still found | test_rm_07_matching_ignores_case |
+| RM-08 | Two rooms carrying the same uuid raise `DuplicateRoomUuid`, naming both | test_rm_08_a_duplicate_uuid_raises |
 
 ### SV — startup validation of the consumer's typeclasses
 
@@ -462,8 +746,23 @@ to another instance. Symmetric: going in character sends them to the character's
 character sends them back to the router, and only the destination differs. A consumer moving a character
 between shards calls the same function, so the path a game uses is the path the library uses.
 
-Six steps: archive what could have changed here, mint a ticket naming the account and the character,
-send it over the bus, delete the character locally, hand the session to `evennia-portal-multiplex`.
+Six steps: stamp where the character is going, archive what could have changed here, mint a ticket naming
+the account and the character, send it over the bus, delete the character locally, hand the session to
+`evennia-portal-multiplex`.
+
+**Leaving stamps `current_shard` with the destination**, when the destination is a shard. Leaving is the
+moment the shard is known, and the stamp before the archive is what carries it. For this library's own
+in-character path it changes nothing — the destination *is* `ensure_location_for_transfer()`, which
+returns `current_shard`. It does the work for a consumer moving a character between shards, who would
+otherwise send a character to `shard1` carrying a `current_shard` of `shard0`, and have the arrival read
+that as a session delivered to the wrong instance and send it back.
+
+Guarded on the roster, because going out of character transfers to the router, and the router is never a
+legal `current_shard` — a character is not in the router, it is out of character while its character
+waits on a shard.
+
+The room half is not stamped with it. Which room on the destination is not something leaving can know,
+and a consumer who wants a particular one sets the pair before calling.
 
 **Archive what could have changed where you are leaving.** An account can only change on the router and
 a character can only change on a shard, so leaving the router archives the account and leaving a shard
@@ -562,6 +861,8 @@ The Deferred is still returned, so a caller can chain onto it. Nothing has to.
 | HO-12 | A session the Portal no longer holds is logged, and the player is not told | test_ho_12_a_missing_session_is_logged_and_not_reported |
 | HO-13 | Moving to where the session already is is logged, and the player is not told | test_ho_13_already_there_is_logged_and_not_reported |
 | HO-14 | An error the move did not turn into an outcome is logged, and the player is told | test_ho_14_an_error_is_logged_and_reported |
+| HO-18 | Leaving for a shard stamps `current_shard` with it, before the character is archived | test_ho_18_leaving_stamps_the_destination_shard |
+| HO-19 | Leaving for the router does not stamp — the router is never a legal `current_shard` | test_ho_19_leaving_for_the_router_stamps_nothing |
 
 ### IC — going in character
 
@@ -866,28 +1167,34 @@ primary key. No other character is touched: they were never deleted, and a chara
 the shard it is played on.
 
 **Three failures, three `return None`.** An account the archive does not hold, a character it does not
-hold, and a character that cannot be placed. Each is a session this instance will not admit, and the
-caller's existing bounce is what happens next — so none of them adds a branch, and none of them raises
-out through `load_sync_data` into AMP, where a player sees nothing at all.
+hold, and a character that cannot be placed anywhere. Each is a session this instance will not admit, and
+the caller's existing bounce is what happens next — so none of them adds a branch, and none of them
+raises out through `load_sync_data` into AMP, where a player sees nothing at all.
+
+**Two more rise past it, because the session override is the frame that can act on them.**
+`RoomOnAnotherShard` needs the session moved, and `DuplicateRoomUuid` needs the player told. Neither is
+a `return None`, because the caller's bounce to the router is wrong for the first and incomplete for the
+second. `reconstitute_for_ticket` attaches the account to `RoomOnAnotherShard` as it passes — placement
+knows the character and the destination, and this is the only frame that also knows the account.
 
 **`_last_puppet` is the reference the archive drops.** `at_post_login` reads it to auto-puppet, and a
 bare `ic` resolves through it. Without it Evennia says the character does not exist — which it does,
 just not under the primary key the restored account remembers. This is the only place both objects are
 in hand.
 
+**A router does not set it, so a bare `ic` there does not work** — Evennia answers `Usage: ic
+<character>` and `ic <name>` is how you go in character. That is the accepted behaviour rather than a
+gap to close: naming the character is the right habit the moment an account has more than one, and a
+bare `ic` that silently picks the wrong one is how a player loses track of which they are playing.
+
 **`uid` and `logged_in` are set rather than calling `sessionhandler.login`.** Evennia's `portal_connect`
 checks that pair a few lines after `load_sync_data` returns and logs the session in itself; calling it
 here would fire every login hook twice. Setting `logged_in` also suppresses the login screen, which
 `_run_cmd_login` only sends when it is false.
 
-**Placement is deliberately unfinished.** `place_in_world(character)` puts an arriving character
-somewhere in this instance's world; today that is Limbo, and reading the character's own room key is
-work of its own. What is built now is everything *around* it: the rebuild, the admission, and the
-failure path. It raises `PlacementFailed` when it cannot place someone, and the arrival treats that as
-a session it cannot admit — so when the real placement lands, nothing around it has to change.
-
-So none of the cases below assert where a character ends up. `place_in_world` is called with the right
-character, and its failure is handled.
+**Where a character ends up is `PL`'s business, not this section's.** The cases here assert that
+`place_in_world` is called with the right character and that each of its three outcomes is handled: a
+placement that worked, one that failed everywhere, and one that resolved somewhere this instance is not.
 
 | ID | Case | Test function |
 |---|---|---|
@@ -914,6 +1221,8 @@ character, and its failure is handled.
 | SS-21 | On a router, the character the ticket names comes back and is on the account's roster | test_ss_21_a_router_brings_the_character_back |
 | SS-22 | On a router, `_last_puppet` is not set — nothing is puppeted there | test_ss_22_a_router_sets_no_last_puppet |
 | SS-23 | A character the archive does not hold leaves the session unadmitted, logged | test_ss_23_an_unarchived_character_is_not_admitted |
+| SS-24 | A character that resolved to another shard is transferred there rather than admitted or sent to the router | test_ss_24_a_character_belonging_elsewhere_is_transferred |
+| SS-25 | A duplicate room uuid tells the player to report it, leaves the session unadmitted, and logs it | test_ss_25_a_duplicate_room_uuid_is_reported_to_the_player |
 
 ### TK — tickets
 

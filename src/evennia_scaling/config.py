@@ -63,6 +63,7 @@ def get_shards():
 
 SETTING_START_LOCATION_SHARD = "SCALING_START_LOCATION_SHARD"
 SETTING_DEFAULT_HOME_SHARD = "SCALING_DEFAULT_HOME_SHARD"
+SETTING_DEFAULT_HOME_UUID = "SCALING_DEFAULT_HOME_UUID"
 
 
 def get_start_location_shard():
@@ -82,6 +83,47 @@ def get_default_home_shard():
     from django.conf import settings
 
     return getattr(settings, SETTING_DEFAULT_HOME_SHARD)
+
+
+def get_default_home_uuid():
+    """Return the default home room's uuid. Checked at boot.
+
+    The room half of the pair `get_default_home_shard` opens, and the last
+    resort in the placement cascade.
+    """
+    from django.conf import settings
+
+    return getattr(settings, SETTING_DEFAULT_HOME_UUID)
+
+
+SETTING_KEEP_LOCATION_IN_UNMARKED_ROOM = (
+    "SCALING_KEEP_LOCATION_IN_UNMARKED_ROOM"
+)
+
+#: What a character's recorded location becomes when they walk into a room
+#: carrying no uuid. Keeping the last recorded room is the default: a room
+#: with no uuid is one the deployment cannot reproduce — deliberately
+#: unmarked, or procedurally generated and gone — so there is nothing to
+#: record, and sending someone home for losing their connection there
+#: punishes them for it.
+#:
+#: It is also the default a consumer can most easily reverse. Clearing after
+#: `super().at_post_move()` is a line; restoring a value already cleared
+#: means reading it first.
+DEFAULT_KEEP_LOCATION_IN_UNMARKED_ROOM = True
+
+
+def get_keep_location_in_unmarked_room() -> bool:
+    """Return ``SCALING_KEEP_LOCATION_IN_UNMARKED_ROOM``, defaulting to True."""
+    from django.conf import settings
+
+    return bool(
+        getattr(
+            settings,
+            SETTING_KEEP_LOCATION_IN_UNMARKED_ROOM,
+            DEFAULT_KEEP_LOCATION_IN_UNMARKED_ROOM,
+        )
+    )
 
 
 SETTING_ROLE = "SCALING_ROLE"
@@ -220,6 +262,8 @@ def check_settings():
 
     See design/library-standards.md § Reading settings.
     """
+    import uuid
+
     from django.conf import settings
     from django.core.exceptions import ImproperlyConfigured
 
@@ -279,6 +323,29 @@ def check_settings():
                 f"{setting} is {anchor!r}, which is not in {SETTING_SHARDS} "
                 f"({tuple(shards)!r}). A room on an instance no deployment "
                 f"runs is a room no character can reach."
+            )
+
+    # The room half of the default home. Checked for shape rather than for
+    # existence: the room is on one shard and every other instance boots
+    # without it, so "does it name a room" can only be asked where the
+    # answer means something. A mangled uuid otherwise satisfies every test
+    # here and simply matches nothing, leaving the last resort in the
+    # placement cascade with no room in it.
+    home_uuid = getattr(settings, SETTING_DEFAULT_HOME_UUID, None)
+    if not home_uuid:
+        problems.append(
+            f"{SETTING_DEFAULT_HOME_UUID} is not set. It names the one room "
+            f"a character can always be sent to, and no uuid this library "
+            f"invented would name anything."
+        )
+    else:
+        try:
+            uuid.UUID(str(home_uuid))
+        except ValueError:
+            problems.append(
+                f"{SETTING_DEFAULT_HOME_UUID} is {home_uuid!r}, which is not "
+                f"a uuid. It is carried as a string and compared as one, so "
+                f"a value that is not one matches no room at all."
             )
 
     # Not a setting of ours, but the same question: is this instance

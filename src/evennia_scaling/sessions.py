@@ -14,6 +14,7 @@ from evennia_message_bus import process_inbox
 from evennia_portal_multiplex.move import PAYLOAD_KEY, send_session
 
 from .config import ROLE_SHARD, get_role, get_router_id
+from .log import scaling_log
 from .tickets import redeem_ticket
 
 #: The key this library's token travels under, inside multiplex's payload.
@@ -81,9 +82,48 @@ def make_scaling_session(base):
             # carried one needs no guard here — it comes back None.
             ticket = redeem_ticket(token)
             if ticket:
-                from .handoff import reconstitute_for_ticket
+                from .handoff import (
+                    RoomOnAnotherShard,
+                    reconstitute_for_ticket,
+                    transfer_to_instance,
+                )
+                from .mixins import DuplicateRoomUuid
 
-                account = reconstitute_for_ticket(self, ticket)
+                try:
+                    account = reconstitute_for_ticket(self, ticket)
+                except RoomOnAnotherShard as elsewhere:
+                    # A transfer rather than a bare session move: the
+                    # destination admits nobody without a ticket, and a
+                    # session arriving without one meets a login screen.
+                    #
+                    # Issued from here rather than from inside placement,
+                    # which runs before this session is logged in — moving
+                    # it there would hand it away while this frame is still
+                    # about to set `uid` on it.
+                    transfer_to_instance(
+                        elsewhere.account,
+                        self,
+                        elsewhere.character,
+                        elsewhere.shard,
+                    )
+                    return
+                except DuplicateRoomUuid as duplicate:
+                    # The one failure here a player can do anything about.
+                    # Every other way an arrival fails is a deployment
+                    # problem they cannot act on; two rooms claiming one
+                    # identity is a content bug that stays invisible unless
+                    # somebody reports it.
+                    scaling_log(
+                        f"a room uuid names more than one room, so an "
+                        f"arriving character cannot be placed: {duplicate}",
+                        level="ERROR",
+                    )
+                    self.msg(
+                        "The room you were in appears to exist twice. "
+                        "Please report this to an admin."
+                    )
+                    account = None
+
                 if account:
                     # Not sessionhandler.login(): `portal_connect` checks
                     # these two a few lines after we return and logs the

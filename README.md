@@ -22,7 +22,12 @@ session over.
 mints a ticket, announces it over the bus and hands the session to the destination, which redeems the
 ticket and rebuilds what it names. Going out of character does the same in reverse.
 
-Not finished: a character arrives in Limbo rather than the room it left from. See
+A character arrives in the room they left from, found by a uuid their world source assigns rather than
+by a primary key that means nothing in another database. Where that room is gone — a rebuilt world, a
+shard that never had it — they fall back to their home room and then to the deployment's default home,
+either of which may be on a different shard again.
+
+Not finished: nothing gives a new character a starting room, so they begin at the default home. See
 [docs/progress.md](docs/progress.md).
 
 ## Is this for me?

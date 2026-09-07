@@ -135,6 +135,17 @@ SCALING_SHARDS = ("shard0", "shard1")
 SCALING_START_LOCATION_SHARD = "shard0"
 SCALING_DEFAULT_HOME_SHARD = "shard0"
 
+# The room half of the default home, as a uuid rather than a dbref: a dbref
+# names nothing after a world rebuild, and `DEFAULT_HOME` exists on every
+# instance, so falling back to it locally would drop a character into
+# whichever shard's Limbo they happened to be on.
+#
+# The Inn, on shard0. The demo has no world source, so `world/demo_rooms.py`
+# stands in for one — run it in game on each shard and this resolves.
+# Nothing carries the uuid until then, and the cascade's last step failing
+# is the honest report of that rather than something to paper over.
+SCALING_DEFAULT_HOME_UUID = "a1000000-0000-4000-8000-000000000001"
+
 ######################################################################
 # Databases
 ######################################################################

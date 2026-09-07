@@ -19,6 +19,26 @@ import evennia_scaling
 from evennia_scaling.tickets import create_ticket
 
 
+def _a_home():
+    """A room for other objects created in a test to call home.
+
+    Evennia stamps `DEFAULT_HOME` — `#2` — on anything created without one,
+    and that row is not in a fresh test database, so the object is left
+    holding a foreign key to nothing and SQLite's constraint check refuses
+    it at teardown.
+
+    A named typeclass, because `create_object` resolves
+    `BASE_OBJECT_TYPECLASS` by default, and that is a gamedir module this
+    suite has not got — it returns `None` rather than raising, which reads
+    as an object with no home rather than as the failure it is.
+    """
+    from evennia.utils.create import create_object
+
+    from tests.game_typeclasses import ScalingRoom
+
+    return create_object(ScalingRoom, key="Somewhere")
+
+
 class TestScaffold(unittest.TestCase):
     """SC — the library is installed and the runner reaches it."""
 
@@ -377,6 +397,53 @@ class TestConfig(TestCase):
         with self.assertRaises(ImproperlyConfigured) as raised:
             check_settings()
         self.assertIn("SCALING_ROUTER_ID", str(raised.exception))
+
+    def test_cf_13_keeping_the_location_in_an_unmarked_room_is_the_default(
+        self,
+    ):
+        """CF-13: a consumer who sets nothing gets this.
+
+        The answer that does not punish a player for losing their
+        connection somewhere the game cannot reproduce. Checked here
+        because `SH-19` and `SH-20` both name the setting, so the default
+        could change and neither would notice.
+        """
+        from evennia_scaling.config import get_keep_location_in_unmarked_room
+
+        self.assertIs(get_keep_location_in_unmarked_room(), True)
+
+    @override_settings(SCALING_DEFAULT_HOME_UUID=None)
+    def test_cf_14_an_unset_default_home_uuid_is_refused(self):
+        """CF-14: no uuid the library invented would name anything.
+
+        It is the room half of the pair `SCALING_DEFAULT_HOME_SHARD` opens,
+        and the last resort in the placement cascade.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            check_settings()
+        self.assertIn("SCALING_DEFAULT_HOME_UUID", str(raised.exception))
+
+    @override_settings(SCALING_DEFAULT_HOME_UUID="the-temple")
+    def test_cf_15_a_default_home_uuid_that_is_not_a_uuid_is_refused(self):
+        """CF-15: a mangled uuid satisfies every other test.
+
+        It is carried as a string and compared as one, so a truncated value
+        simply matches nothing — and the cascade's last resort silently has
+        no room in it.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            check_settings()
+        message = str(raised.exception)
+        self.assertIn("SCALING_DEFAULT_HOME_UUID", message)
+        self.assertIn("the-temple", message)
 
     @override_settings(SCALING_SHARDS=("shard0",))
     def test_cf_10_a_world_anchor_outside_the_roster_is_refused(self):
@@ -858,6 +925,11 @@ class TestAccountMixin(TestCase):
 class TestCurrentShard(TestCase):
     """SH — where a character is in the game world."""
 
+    #: Room identities, as a consumer's world declares them. Two, because
+    #: the cascade's second step has to be seen writing one over the other.
+    ROOM_UUID = "6f1c9a02-0f4e-4b21-9d3a-5c8e7f2a1b40"
+    HOME_UUID = "b23d7e51-8a6c-4f09-a1d2-3e4f5a6b7c88"
+
     def _character(self):
         """A character carrying the mixin, created as a consumer's would be.
 
@@ -872,6 +944,19 @@ class TestCurrentShard(TestCase):
         # dbref it names does not exist in a fresh test database.
         home = create_object(key="Somewhere")
         return create_object(ScalingCharacter, key="Rowan", home=home)
+
+    def _room(self, room_uuid=None):
+        """A room, marked with a uuid or not, as a consumer's world would be."""
+        from evennia.utils.create import create_object
+
+        from tests.game_typeclasses import ScalingRoom
+
+        room = create_object(
+            ScalingRoom, key="Forest Path", home=_a_home()
+        )
+        if room_uuid:
+            room.scaling_room_uuid = room_uuid
+        return room
 
     def test_sh_01_is_stored_as_an_attribute(self):
         """SH-01: an Attribute survives archiving; a field would not.
@@ -917,26 +1002,26 @@ class TestCurrentShard(TestCase):
             character.current_shard = None
         self.assertIn("current_shard", str(raised.exception))
 
-    def test_sh_07_the_room_ref_is_stored_as_an_attribute(self):
+    def test_sh_07_the_room_uuid_is_stored_as_an_attribute(self):
         """SH-07: an Attribute survives archiving; a field would not.
 
         Half of a composite key is no use on its own, so this has to come
         through the round trip with `current_shard`.
         """
-        from evennia_scaling.mixins import CURRENT_ROOM_REF_KEY
+        from evennia_scaling.mixins import CURRENT_ROOM_UUID_KEY
 
         character = self._character()
-        character.current_room_ref = 5
-        self.assertTrue(character.attributes.has(CURRENT_ROOM_REF_KEY))
+        character.current_room_uuid = self.ROOM_UUID
+        self.assertTrue(character.attributes.has(CURRENT_ROOM_UUID_KEY))
 
-    def test_sh_08_an_unassigned_room_ref_reads_as_none(self):
+    def test_sh_08_an_unassigned_room_uuid_reads_as_none(self):
         """SH-08: a room key means nothing without a shard beside it.
 
         So there is no useful value to fall back to at read time — the pair
         is completed at the moment of use instead.
         """
         character = self._character()
-        self.assertIsNone(character.current_room_ref)
+        self.assertIsNone(character.current_room_uuid)
 
     @override_settings(
         SCALING_DEFAULT_HOME_SHARD="shard1", DEFAULT_HOME="#99"
@@ -945,11 +1030,11 @@ class TestCurrentShard(TestCase):
         """SH-09: they are where they left off, and that is where they go."""
         character = self._character()
         character.current_shard = "shard0"
-        character.current_room_ref = 5
+        character.current_room_uuid = self.ROOM_UUID
 
         self.assertEqual(character.ensure_location_for_transfer(), "shard0")
         self.assertEqual(character.current_shard, "shard0")
-        self.assertEqual(character.current_room_ref, 5)
+        self.assertEqual(character.current_room_uuid, self.ROOM_UUID)
 
     @override_settings(
         SCALING_DEFAULT_HOME_SHARD="shard1", DEFAULT_HOME="#99"
@@ -964,10 +1049,10 @@ class TestCurrentShard(TestCase):
         character = self._character()
         character.current_shard = "shard0"
         character.home_shard = "shard0"
-        character.home_room_ref = 7
+        character.home_room_uuid = self.HOME_UUID
 
         self.assertEqual(character.ensure_location_for_transfer(), "shard0")
-        self.assertEqual(character.current_room_ref, 7)
+        self.assertEqual(character.current_room_uuid, self.HOME_UUID)
 
     def test_sh_11_the_home_pair_is_stored_and_checked(self):
         """SH-11: `character.home` is a dbref and does not survive the archive.
@@ -977,16 +1062,16 @@ class TestCurrentShard(TestCase):
         same property, declared twice.
         """
         from evennia_scaling.mixins import (
-            HOME_ROOM_REF_KEY,
+            HOME_ROOM_UUID_KEY,
             HOME_SHARD_KEY,
         )
 
         character = self._character()
         character.home_shard = "shard1"
-        character.home_room_ref = 7
+        character.home_room_uuid = self.HOME_UUID
 
         self.assertTrue(character.attributes.has(HOME_SHARD_KEY))
-        self.assertTrue(character.attributes.has(HOME_ROOM_REF_KEY))
+        self.assertTrue(character.attributes.has(HOME_ROOM_UUID_KEY))
 
         with self.assertRaises(ValueError) as raised:
             character.home_shard = "shrad1"
@@ -997,14 +1082,20 @@ class TestCurrentShard(TestCase):
     @override_settings(
         SCALING_DEFAULT_HOME_SHARD="shard1", DEFAULT_HOME="#99"
     )
-    def test_sh_12_neither_pair_falls_back_to_the_default_home(self):
-        """SH-12: the last resort, for a character that has no home."""
+    def test_sh_12_neither_pair_falls_back_to_the_default_home_shard(self):
+        """SH-12: the last resort names a shard and no room.
+
+        `DEFAULT_HOME` is a dbref belonging to whichever instance is asked,
+        so writing it into a field that holds uuids would leave the arrival
+        unable to tell which kind of value it is holding. Unset is also the
+        truer claim: this cascade knows the shard and not the room.
+        """
         character = self._character()
         character.current_shard = "shard0"
 
         self.assertEqual(character.ensure_location_for_transfer(), "shard1")
         self.assertEqual(character.current_shard, "shard1")
-        self.assertEqual(character.current_room_ref, "#99")
+        self.assertIsNone(character.current_room_uuid)
 
     @override_settings(
         SCALING_DEFAULT_HOME_SHARD="shard1", DEFAULT_HOME="#99"
@@ -1019,7 +1110,140 @@ class TestCurrentShard(TestCase):
 
         character.ensure_location_for_transfer()
 
-        self.assertIsNone(character.home_room_ref)
+        self.assertIsNone(character.home_room_uuid)
+
+    def test_sh_14_a_room_uuid_is_stored_as_given(self):
+        """SH-14: the check says whether it is a uuid, not how to write it.
+
+        `evennia-world-builder` holds the matching identity on the room and
+        stores the author's string as written, absorbing the variation at
+        lookup. Canonicalising here would stop matching a room whose
+        `entity_id` was written in uppercase.
+        """
+        character = self._character()
+        character.current_room_uuid = self.ROOM_UUID.upper()
+        self.assertEqual(character.current_room_uuid, self.ROOM_UUID.upper())
+
+    def test_sh_15_refuses_a_value_that_is_not_a_uuid(self):
+        """SH-15: a dbref or a room name here arrives in the wrong place.
+
+        Set on the home half, so the refusal has to name that one — the same
+        property serves both, and reads its own key off the descriptor.
+        """
+        character = self._character()
+        with self.assertRaises(ValueError) as raised:
+            character.home_room_uuid = "#99"
+        message = str(raised.exception)
+        self.assertIn("home_room_uuid", message)
+        self.assertIn("#99", message)
+
+    def test_sh_16_refuses_a_uuid_object(self):
+        """SH-16: a uuid travels as a string between these libraries.
+
+        `uuid.UUID` would accept one back happily. Letting it in means half
+        the stored values are objects that compare unequal to every string
+        beside them.
+        """
+        import uuid
+
+        character = self._character()
+        with self.assertRaises(ValueError) as raised:
+            character.current_room_uuid = uuid.UUID(self.ROOM_UUID)
+        self.assertIn("current_room_uuid", str(raised.exception))
+
+    def test_sh_17_a_room_uuid_accepts_none(self):
+        """SH-17: unset is a real state, unlike `current_shard`.
+
+        It is what a character has before anything stamps one, and what the
+        cascade's third step leaves behind.
+        """
+        character = self._character()
+        character.current_room_uuid = self.ROOM_UUID
+        character.current_room_uuid = None
+        self.assertIsNone(character.current_room_uuid)
+
+    @override_settings(SCALING_ROLE="shard", MULTIPLEX_INSTANCE_ID="shard1")
+    def test_sh_18_a_move_stamps_the_pair(self):
+        """SH-18: the pair is only true if something keeps it true.
+
+        Written by the one thing that knows both halves at once — the shard
+        is this instance, and the room is the one just walked into.
+        """
+        character = self._character()
+
+        character.move_to(self._room(self.ROOM_UUID), quiet=True)
+
+        self.assertEqual(character.current_room_uuid, self.ROOM_UUID)
+        self.assertEqual(character.current_shard, "shard1")
+
+    @override_settings(SCALING_ROLE="shard", MULTIPLEX_INSTANCE_ID="shard1")
+    def test_sh_19_an_unmarked_room_leaves_the_pair_alone(self):
+        """SH-19: the default — a lost connection is not a choice.
+
+        A room with no uuid is one the deployment cannot reproduce, so
+        there is nothing to record. Keeping the last room they were
+        verifiably in beats sending them home for it.
+        """
+        character = self._character()
+        character.current_shard = "shard0"
+        character.current_room_uuid = self.ROOM_UUID
+
+        character.move_to(self._room(), quiet=True)
+
+        self.assertEqual(character.current_room_uuid, self.ROOM_UUID)
+        self.assertEqual(character.current_shard, "shard0")
+
+    @override_settings(
+        SCALING_ROLE="shard",
+        MULTIPLEX_INSTANCE_ID="shard1",
+        SCALING_KEEP_LOCATION_IN_UNMARKED_ROOM=False,
+    )
+    def test_sh_20_an_unmarked_room_can_clear_the_room_half(self):
+        """SH-20: the room half alone carries the meaning.
+
+        The shard is still stamped — a character standing in an unrecorded
+        room is still on this shard, and `_ShardProperty` refuses `None`
+        besides. An incomplete pair is what the cascade reads as unusable.
+        """
+        character = self._character()
+        character.current_room_uuid = self.ROOM_UUID
+
+        character.move_to(self._room(), quiet=True)
+
+        self.assertIsNone(character.current_room_uuid)
+        self.assertEqual(character.current_shard, "shard1")
+
+    @override_settings(SCALING_ROLE="router", MULTIPLEX_INSTANCE_ID="router")
+    def test_sh_21_a_router_stamps_nothing(self):
+        """SH-21: a character is never *in* the router.
+
+        And the router's id is by definition not in `SCALING_SHARDS`, so
+        stamping there would raise on the shard half — at character
+        creation, which is a router operation.
+        """
+        character = self._character()
+
+        character.move_to(self._room(self.ROOM_UUID), quiet=True)
+
+        self.assertIsNone(character.current_room_uuid)
+        self.assertEqual(character.current_shard, "shard0")
+
+    @override_settings(SCALING_ROLE="shard", MULTIPLEX_INSTANCE_ID="shard1")
+    def test_sh_22_the_inherited_look_still_happens(self):
+        """SH-22: `DefaultCharacter` overrides this hook already.
+
+        It makes the character look at the room it arrived in, which is the
+        one thing a player notices the moment it stops happening.
+        """
+        from unittest import mock
+
+        character = self._character()
+        room = self._room(self.ROOM_UUID)
+
+        with mock.patch.object(type(character), "at_look") as looking:
+            character.move_to(room, quiet=True)
+
+        looking.assert_called_once_with(room)
 
     def test_sh_06_carries_the_archive_mixin(self):
         """SH-06: one mixin on the character, not two.
@@ -1044,6 +1268,448 @@ class TestCurrentShard(TestCase):
         """
         character = self._character()
         self.assertEqual(character.current_shard, "shard1")
+
+
+class TestRoomUuid(TestCase):
+    """RM — the room mixin."""
+
+    ROOM_UUID = "c7e0b418-93da-4a52-8f6b-1d0e4a9c5f27"
+
+    def _room(self):
+        """A room carrying the mixin, created as a consumer's would be."""
+        from evennia.utils.create import create_object
+
+        from tests.game_typeclasses import ScalingRoom
+
+        return create_object(
+            ScalingRoom, key="Forest Path", home=_a_home()
+        )
+
+    def test_rm_01_the_room_uuid_is_stored_as_an_attribute(self):
+        """RM-01: a typeclass cannot add a column.
+
+        Not for the archive's sake — rooms are never archived. This is just
+        how a typeclass stores anything.
+        """
+        from evennia_scaling.mixins import ROOM_UUID_KEY
+
+        room = self._room()
+        room.scaling_room_uuid = self.ROOM_UUID
+        self.assertTrue(room.attributes.has(ROOM_UUID_KEY))
+
+    def test_rm_02_a_new_room_has_no_uuid(self):
+        """RM-02: assigned, never minted.
+
+        A room minting its own would mint a fresh one on every world
+        rebuild, which is the moment the identity has to hold still.
+        """
+        self.assertIsNone(self._room().scaling_room_uuid)
+
+    def test_rm_03_refuses_a_value_that_is_not_a_uuid(self):
+        """RM-03: the same property the character's two halves use.
+
+        `SH-14` to `SH-17` cover the rule itself; this covers only that
+        this attribute is wired to it.
+        """
+        room = self._room()
+        with self.assertRaises(ValueError) as raised:
+            room.scaling_room_uuid = "#99"
+        self.assertIn("scaling_room_uuid", str(raised.exception))
+
+    def test_rm_04_finds_the_room_carrying_the_uuid(self):
+        """RM-04: a uuid in, the live room out.
+
+        The whole point of the identity — a dbref is gone after a world
+        rebuild and this is not.
+        """
+        from evennia_scaling.mixins import find_room_by_uuid
+
+        room = self._room()
+        room.scaling_room_uuid = self.ROOM_UUID
+
+        self.assertEqual(find_room_by_uuid(self.ROOM_UUID), room)
+
+    def test_rm_05_an_unknown_uuid_returns_none(self):
+        """RM-05: a normal case, not a failure.
+
+        The world may have been redeployed without that room, or the
+        character's last location may be somewhere this instance has not
+        got.
+        """
+        from evennia_scaling.mixins import find_room_by_uuid
+
+        self._room()
+        self.assertIsNone(find_room_by_uuid(self.ROOM_UUID))
+
+    def test_rm_06_no_uuid_returns_none(self):
+        """RM-06: so a caller holding an unstamped character need not guard."""
+        from evennia_scaling.mixins import find_room_by_uuid
+
+        self.assertIsNone(find_room_by_uuid(None))
+
+    def test_rm_07_matching_ignores_case(self):
+        """RM-07: neither copy is canonicalised.
+
+        The room's value is the consumer's string as written, and the
+        character's is whatever was stamped from it — so the two can differ
+        in case while naming one uuid.
+        """
+        from evennia_scaling.mixins import find_room_by_uuid
+
+        room = self._room()
+        room.scaling_room_uuid = self.ROOM_UUID.upper()
+
+        self.assertEqual(find_room_by_uuid(self.ROOM_UUID), room)
+
+    def test_rm_08_a_duplicate_uuid_raises(self):
+        """RM-08: there is no right answer to pick from.
+
+        Picking one silently puts a character in a room that is not where
+        the game believes they are. Both dbrefs are named, because fixing
+        it means finding the two colliding entries in the world source.
+        """
+        from evennia_scaling.mixins import DuplicateRoomUuid, find_room_by_uuid
+
+        first = self._room()
+        first.scaling_room_uuid = self.ROOM_UUID
+        second = self._room()
+        second.scaling_room_uuid = self.ROOM_UUID
+
+        with self.assertRaises(DuplicateRoomUuid) as raised:
+            find_room_by_uuid(self.ROOM_UUID)
+        message = str(raised.exception)
+        self.assertIn(first.dbref, message)
+        self.assertIn(second.dbref, message)
+
+
+@override_settings(
+    MULTIPLEX_INSTANCE_ID="shard0",
+    SCALING_ROLE="shard",
+    SCALING_DEFAULT_HOME_SHARD="shard0",
+    SCALING_DEFAULT_HOME_UUID="3a1f7c88-52b9-4d06-9e74-8b2c0d5a6e11",
+)
+class TestPlacement(TestCase):
+    """PL — putting an arriving character somewhere in this world.
+
+    This instance is `shard0` throughout. A case about somewhere else
+    names `shard1`, which is in the roster and is not here.
+    """
+
+    CURRENT = "1b6d90a4-77e2-4c53-8a0f-9d3e5b7c2f60"
+    HOME = "5e4c2a71-0b83-4f19-97d6-1c8a3e6b4d02"
+    DEFAULT_HOME = "3a1f7c88-52b9-4d06-9e74-8b2c0d5a6e11"
+
+    def setUp(self):
+        from evennia.utils.idmapper.models import flush_cache
+
+        super().setUp()
+        flush_cache()
+
+    def _character(self):
+        """A character as the arrival hands one over: standing nowhere.
+
+        `restore` strips location and home, so this is what placement is
+        always called with.
+        """
+        from evennia.utils.create import create_object
+
+        from tests.game_typeclasses import ScalingCharacter
+
+        return create_object(
+            ScalingCharacter, key="Rowan", home=_a_home()
+        )
+
+    def _room(self, room_uuid):
+        """A room in this instance's world, carrying a uuid."""
+        from evennia.utils.create import create_object
+
+        from tests.game_typeclasses import ScalingRoom
+
+        room = create_object(
+            ScalingRoom, key="Forest Path", home=_a_home()
+        )
+        room.scaling_room_uuid = room_uuid
+        return room
+
+    def test_pl_01_the_current_pair_is_placed(self):
+        """PL-01: the only row a well-run deployment ever reaches.
+
+        Everything below it is recovery — a rebuilt world, a room dropped
+        from the source, a character who fell out somewhere transient.
+        """
+        from evennia_scaling.handoff import place_in_world
+
+        room = self._room(self.CURRENT)
+        character = self._character()
+        character.current_shard = "shard0"
+        character.current_room_uuid = self.CURRENT
+
+        place_in_world(character)
+
+        self.assertEqual(character.location, room)
+
+    def test_pl_02_another_shards_current_pair_is_forwarded(self):
+        """PL-02: the session was delivered to the wrong instance.
+
+        Leaving stamps the destination (`HO-18`), so no path here produces
+        this — hence the breach log. Nothing is rewritten: the pair is
+        already right, and it is the session that is in the wrong place.
+        """
+        from unittest import mock
+
+        from evennia_scaling.handoff import RoomOnAnotherShard, place_in_world
+
+        character = self._character()
+        character.current_shard = "shard1"
+        character.current_room_uuid = self.CURRENT
+
+        with mock.patch("evennia_scaling.handoff.scaling_log") as log:
+            with self.assertRaises(RoomOnAnotherShard) as raised:
+                place_in_world(character)
+
+        self.assertEqual(raised.exception.shard, "shard1")
+        self.assertEqual(character.current_shard, "shard1")
+        self.assertEqual(character.current_room_uuid, self.CURRENT)
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+
+    def test_pl_03_an_unresolvable_current_room_falls_through(self):
+        """PL-03: the shard is right and the room is not here.
+
+        A world rebuilt without that room, which the sending side could
+        not have known — it can only check that a key is present.
+        """
+        from evennia_scaling.handoff import place_in_world
+
+        home = self._room(self.HOME)
+        character = self._character()
+        character.current_shard = "shard0"
+        character.current_room_uuid = self.CURRENT
+        character.home_shard = "shard0"
+        character.home_room_uuid = self.HOME
+
+        place_in_world(character)
+
+        self.assertEqual(character.location, home)
+
+    def test_pl_04_a_home_on_another_shard_is_forwarded(self):
+        """PL-04: the rewrite is what makes the cascade terminate.
+
+        Each hop advances it one row, so the next instance starts from
+        where this one got to. Without it, that instance resolves the same
+        unreachable pair forever.
+        """
+        from evennia_scaling.handoff import RoomOnAnotherShard, place_in_world
+
+        character = self._character()
+        character.current_shard = "shard0"
+        character.home_shard = "shard1"
+        character.home_room_uuid = self.HOME
+
+        with self.assertRaises(RoomOnAnotherShard) as raised:
+            place_in_world(character)
+
+        self.assertEqual(raised.exception.shard, "shard1")
+        self.assertEqual(character.current_shard, "shard1")
+        self.assertEqual(character.current_room_uuid, self.HOME)
+
+    def test_pl_05_a_home_on_this_shard_is_placed(self):
+        """PL-05: the location is now true, so it is written back.
+
+        The home pair is not: falling back to it is a recovery, not a
+        decision that this is where the character lives from now on.
+        """
+        from evennia_scaling.handoff import place_in_world
+
+        home = self._room(self.HOME)
+        character = self._character()
+        character.current_shard = "shard0"
+        character.home_shard = "shard0"
+        character.home_room_uuid = self.HOME
+
+        place_in_world(character)
+
+        self.assertEqual(character.location, home)
+        self.assertEqual(character.current_room_uuid, self.HOME)
+        self.assertEqual(character.home_room_uuid, self.HOME)
+
+    def test_pl_06_an_unresolvable_home_room_falls_through(self):
+        """PL-06: their home is gone too, so the last resort it is."""
+        from evennia_scaling.handoff import place_in_world
+
+        default_home = self._room(self.DEFAULT_HOME)
+        character = self._character()
+        character.current_shard = "shard0"
+        character.home_shard = "shard0"
+        character.home_room_uuid = self.HOME
+
+        place_in_world(character)
+
+        self.assertEqual(character.location, default_home)
+
+    @override_settings(SCALING_DEFAULT_HOME_SHARD="shard1")
+    def test_pl_07_a_default_home_on_another_shard_is_forwarded(self):
+        """PL-07: one default home in the deployment, on one shard.
+
+        Resolving whatever sits at the local `DEFAULT_HOME` instead is how
+        a beginner ends up in the advanced shard's Limbo.
+        """
+        from evennia_scaling.handoff import RoomOnAnotherShard, place_in_world
+
+        character = self._character()
+        character.current_shard = "shard0"
+
+        with self.assertRaises(RoomOnAnotherShard) as raised:
+            place_in_world(character)
+
+        self.assertEqual(raised.exception.shard, "shard1")
+        self.assertEqual(character.current_shard, "shard1")
+        self.assertEqual(character.current_room_uuid, self.DEFAULT_HOME)
+
+    def test_pl_08_the_default_home_is_placed(self):
+        """PL-08: a character with nothing recorded at all.
+
+        Both rows above fail on a missing room key rather than on an
+        unresolvable one, and the last resort still catches them.
+        """
+        from evennia_scaling.handoff import place_in_world
+
+        default_home = self._room(self.DEFAULT_HOME)
+        character = self._character()
+
+        place_in_world(character)
+
+        self.assertEqual(character.location, default_home)
+
+    def test_pl_09_nothing_resolvable_raises(self):
+        """PL-09: a deployment where a character has nowhere to stand.
+
+        Broken rather than unlucky, so it names all three pairs — the
+        operator has to know which of them was expected to work.
+        """
+        from evennia_scaling.handoff import PlacementFailed, place_in_world
+
+        character = self._character()
+        character.current_shard = "shard0"
+        character.current_room_uuid = self.CURRENT
+        character.home_shard = "shard0"
+        character.home_room_uuid = self.HOME
+
+        with self.assertRaises(PlacementFailed) as raised:
+            place_in_world(character)
+
+        message = str(raised.exception)
+        self.assertIn(self.CURRENT, message)
+        self.assertIn(self.HOME, message)
+        self.assertIn(self.DEFAULT_HOME, message)
+
+    def test_pl_10_a_duplicate_uuid_is_not_routed_around(self):
+        """PL-10: falling through would hide it.
+
+        The character would land somewhere plausible and two rooms would
+        go on claiming one identity in the world source, unnoticed.
+        """
+        from evennia_scaling.handoff import place_in_world
+        from evennia_scaling.mixins import DuplicateRoomUuid
+
+        self._room(self.CURRENT)
+        self._room(self.CURRENT)
+        self._room(self.HOME)
+        character = self._character()
+        character.current_shard = "shard0"
+        character.current_room_uuid = self.CURRENT
+        character.home_shard = "shard0"
+        character.home_room_uuid = self.HOME
+
+        with self.assertRaises(DuplicateRoomUuid):
+            place_in_world(character)
+
+    def _superuser(self):
+        """An account with the flag, and nothing else that matters here."""
+        from unittest import mock
+
+        return mock.Mock(is_superuser=True)
+
+    def test_pl_11_a_superuser_goes_to_the_default_home(self):
+        """PL-11: not a row in the cascade — a branch before it.
+
+        They can `tel` anywhere the moment they arrive, so being routed by
+        where their character was buys them nothing, and one known room is
+        worth more. It is also what makes a shard whose rooms carry no
+        uuids reachable by the person who can fix that.
+        """
+        from evennia_scaling.handoff import place_in_world
+
+        limbo = self._room(self.HOME)
+        self._room(self.CURRENT)
+        character = self._character()
+        character.current_shard = "shard0"
+        character.current_room_uuid = self.CURRENT
+
+        with override_settings(DEFAULT_HOME=limbo.dbref):
+            place_in_world(character, self._superuser())
+
+        self.assertEqual(character.location, limbo)
+
+    def test_pl_12_a_superusers_pair_is_left_alone(self):
+        """PL-12: nothing resolved, so there is nothing to record.
+
+        It keeps what it held and restamps on their first move, like
+        anyone's.
+        """
+        from evennia_scaling.handoff import place_in_world
+
+        limbo = self._room(self.HOME)
+        character = self._character()
+        character.current_shard = "shard0"
+        character.current_room_uuid = self.CURRENT
+
+        with override_settings(DEFAULT_HOME=limbo.dbref):
+            place_in_world(character, self._superuser())
+
+        self.assertEqual(character.current_shard, "shard0")
+        self.assertEqual(character.current_room_uuid, self.CURRENT)
+
+    def test_pl_13_a_superuser_falls_back_to_object_two(self):
+        """PL-13: an operator repointed `DEFAULT_HOME` and it has gone.
+
+        Evennia's initial setup makes Limbo, and makes it second, so `#2`
+        is it on any instance it set up. Where `DEFAULT_HOME` is at its own
+        default this is the same lookup and never fires.
+        """
+        from evennia.objects.models import ObjectDB
+
+        from evennia_scaling.handoff import place_in_world
+
+        # Two objects, so one of them is #2 whatever the run has already
+        # created — the fallback is by id, and only by id.
+        self._room(self.HOME)
+        self._room(self.CURRENT)
+        second = ObjectDB.objects.get(pk=2)
+        character = self._character()
+        character.current_shard = "shard0"
+
+        with override_settings(DEFAULT_HOME="#9999"):
+            place_in_world(character, self._superuser())
+
+        self.assertEqual(character.location, second)
+
+    @override_settings(DEFAULT_HOME="#9999")
+    def test_pl_14_a_superuser_with_no_limbo_raises(self):
+        """PL-14: the instance has no Limbo at all.
+
+        They are not locked out — the raise sends them back to the router,
+        with a log naming the setting.
+        """
+        from evennia.objects.models import ObjectDB
+
+        from evennia_scaling.handoff import PlacementFailed, place_in_world
+
+        character = self._character()
+        character.current_shard = "shard0"
+        ObjectDB.objects.filter(pk=2).delete()
+
+        with self.assertRaises(PlacementFailed):
+            place_in_world(character, self._superuser())
 
 
 _STUBS = "tests.typeclass_stubs"
@@ -1430,6 +2096,43 @@ class TestHandoff(TestCase):
             self._transfer(account, character, **kwargs)
         return [call.args[0] for call in archiving.call_args_list]
 
+    def test_ho_18_leaving_stamps_the_destination_shard(self):
+        """HO-18: leaving is the moment the shard is known.
+
+        A no-op for this library's own in-character path, where the
+        destination *is* what `ensure_location_for_transfer` returned. It
+        does the work for a consumer moving a character between shards,
+        who would otherwise send one to `shard1` still saying `shard0` and
+        have the arrival read that as a misdelivered session.
+
+        Stamped before the archive, which is what carries it.
+        """
+        account, character = self._playing()
+        character.current_shard = "shard0"
+
+        self._transfer(account, character, to_instance="shard1")
+
+        self.assertEqual(character.current_shard, "shard1")
+
+    @override_settings(MESSAGEBUS_INSTANCE_ID="shard0")
+    def test_ho_19_leaving_for_the_router_stamps_nothing(self):
+        """HO-19: the router is never a legal `current_shard`.
+
+        A character is not *in* the router — it is out of character while
+        its character waits on a shard, and that shard is what
+        `current_shard` keeps naming.
+
+        The suite's own instance id is the router, and the bus refuses to
+        address itself — so for this one case the instance is a shard,
+        which is where going out of character happens anyway.
+        """
+        account, character = self._playing()
+        character.current_shard = "shard0"
+
+        self._transfer(account, character, to_instance="router")
+
+        self.assertEqual(character.current_shard, "shard0")
+
     def test_ho_01_leaving_the_router_archives_the_account(self):
         """HO-01: the router is the only place an account can change.
 
@@ -1685,7 +2388,7 @@ class TestGoingInCharacter(TestCase):
         """
         account, character = self._playing()
         character.current_shard = "shard1"
-        character.current_room_ref = 5
+        character.current_room_uuid = "0d4a8f13-7b25-4c60-8e91-2f6a5b3c7d10"
         session = _PlayingSession()
 
         transfer, _ = self._puppet(account, character, session)
@@ -2660,6 +3363,11 @@ class _FakeSession:
         self.logged_in = logged_in
         self.uid = uid
         self.loaded = []
+        self.told = []
+
+    def msg(self, text=None, **kwargs):
+        """What the arrival says to a player it will not admit."""
+        self.told.append(text)
 
 
 def _session_base():
@@ -3171,6 +3879,73 @@ class TestArrival(TestCase):
         self.assertFalse(session.logged_in)
         self.assertEqual(log.call_args.kwargs["level"], "ERROR")
         sending.assert_called_once()
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ss_24_a_character_belonging_elsewhere_is_transferred(self):
+        """SS-24: neither admitted nor sent to the router.
+
+        A transfer rather than a bare session move, because the
+        destination admits nobody without a ticket — a session arriving
+        without one meets a login screen, which is the stranded state.
+
+        Issued here rather than inside placement: `place_in_world` runs
+        before this session is logged in, so moving it from there would
+        hand it away while the caller is about to set `uid` on it.
+        """
+        from unittest import mock
+
+        from evennia_scaling.handoff import RoomOnAnotherShard
+
+        account, character = self._arriving()
+        ticket = self._ticket_for(account, character)
+        session = self._session(ticket["token"])
+
+        with mock.patch(
+            "evennia_scaling.handoff.place_in_world",
+            side_effect=RoomOnAnotherShard("shard1", character),
+        ), mock.patch(
+            # Patched where it is defined: `sessions` imports it inside the
+            # call, because `handoff` imports from `sessions`.
+            "evennia_scaling.handoff.transfer_to_instance"
+        ) as transfer, mock.patch(
+            "evennia_scaling.sessions.send_session"
+        ) as sending:
+            session.load_sync_data({})
+
+        self.assertFalse(session.logged_in)
+        sending.assert_not_called()
+        self.assertEqual(transfer.call_args.args[3], "shard1")
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ss_25_a_duplicate_room_uuid_is_reported_to_the_player(self):
+        """SS-25: the one failure here a player can do anything about.
+
+        Every other way an arrival fails is a deployment problem they
+        cannot act on. Two rooms claiming one identity is a content bug,
+        and it stays invisible unless somebody reports it.
+        """
+        from unittest import mock
+
+        from evennia_scaling.mixins import DuplicateRoomUuid
+
+        account, character = self._arriving()
+        ticket = self._ticket_for(account, character)
+        session = self._session(ticket["token"])
+
+        with mock.patch(
+            "evennia_scaling.handoff.place_in_world",
+            side_effect=DuplicateRoomUuid("two rooms are #5 and #6"),
+        ), mock.patch(
+            "evennia_scaling.sessions.scaling_log"
+        ) as log, mock.patch(
+            "evennia_scaling.sessions.send_session"
+        ) as sending:
+            session.load_sync_data({})
+
+        self.assertFalse(session.logged_in)
+        sending.assert_called_once()
+        self.assertEqual(log.call_args.kwargs["level"], "ERROR")
+        self.assertIn("report", session.told[0])
 
     @override_settings(SCALING_ROLE="router")
     def test_ss_21_a_router_brings_the_character_back(self):

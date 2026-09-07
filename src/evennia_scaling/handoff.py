@@ -43,40 +43,202 @@ _OUTCOMES = {
 
 
 class PlacementFailed(Exception):
-    """Raised when an arriving character cannot be put anywhere.
+    """Raised when an arriving character has nowhere to stand at all.
 
-    Nothing raises it yet: placement puts an arriving character in this
-    instance's `DEFAULT_HOME`, which always resolves. It exists so the
-    arrival already handles the failure, and reading a character's own room
-    key can land without anything around it changing.
+    Every row of the cascade tried and none of them named a room in this
+    database. That is a broken deployment rather than an unlucky character,
+    so the message names all three.
     """
 
 
-def place_in_world(character):
+class RoomOnAnotherShard(Exception):
+    """Raised when placement resolved a room, and it is not on this shard.
+
+    Not a failure — the answer is a different instance. Carries what a
+    transfer needs: the shard, the character, and the account, which
+    `reconstitute_for_ticket` attaches as this passes through it.
+
+    Raised rather than acted on because placement runs inside
+    `load_sync_data`, before the session is logged in. Moving the session
+    from here would hand it away while the caller is still about to set
+    ``uid`` on it, so the frame that owns the session does the moving.
+    """
+
+    def __init__(self, shard, character):
+        super().__init__(
+            f"{character} belongs on {shard}, which is not this instance."
+        )
+        self.shard = shard
+        self.character = character
+        self.account = None
+
+
+def place_in_world(character, account=None):
     """Put an arriving character somewhere in this instance's world.
 
     `restore` strips location, home and every other reference — they are
     primary keys into a database that no longer exists — so a character
     arrives standing nowhere at all.
 
-    **Deliberately unfinished.** Where a character *should* appear is the
-    room its own `current_room_ref` names, and reading that is work of its
-    own. Until then this is Limbo, and everything around it — the rebuild,
-    the admission, and the failure path — is built and tested.
+    **A superuser goes to Limbo and the cascade does not run.** See
+    `_place_superuser`. The account is passed because the character does
+    not know whose it is yet, and this is called from the one frame that
+    has both.
 
-    Raises `PlacementFailed` when it cannot place someone. That is the
-    contract the arrival is written against.
+    **Three resolutions, then failure.** Where they are, where they live,
+    and the one safe place in the deployment. Each names a shard and a room
+    uuid, and each asks the same two questions: is that shard this one, and
+    does that uuid name a room here.
+
+    The sending side walked a cascade of the same shape, and this is not a
+    repeat of it. That one checks *presence* — is there a shard and a room
+    key. This one checks *resolvability*, which no sender can know, because
+    the room is in a database it cannot see.
+
+    **Rows two and three rewrite the pair before raising**, and that is what
+    makes the cascade terminate: each hop advances it one row, so the next
+    instance starts from where this one got to rather than from the top.
+
+    **Row one rewrites nothing**, because it resolved nothing. The pair is
+    already right and it is the session that is in the wrong place — which,
+    since leaving stamps the destination, cannot happen by any path here.
+    So it is logged as the breach it is.
+
+    Raises `RoomOnAnotherShard` when the answer is elsewhere,
+    `PlacementFailed` when there is no answer, and lets
+    `DuplicateRoomUuid` through: a world source naming one room twice is
+    not something to route around quietly.
+    """
+    from .config import (
+        get_default_home_shard,
+        get_default_home_uuid,
+        get_shards,
+    )
+    from .mixins import find_room_by_uuid
+
+    if account is not None and account.is_superuser:
+        _place_superuser(character)
+        return
+
+    here = _this_instance()
+
+    # Read before the cascade rewrites them, so the failure at the bottom
+    # can say what was actually tried rather than what it last wrote.
+    tried_room = character.current_room_uuid
+    tried_home = character.home_room_uuid
+    tried_home_shard = character.home_shard
+
+    if character.current_shard != here:
+        scaling_log(
+            f"INVARIANT BREACH: {character} arrived here and belongs on "
+            f"{character.current_shard}. Leaving stamps the destination, so "
+            f"no path here produces this. Sending them on.",
+            level="ERROR",
+        )
+        raise RoomOnAnotherShard(character.current_shard, character)
+
+    room = find_room_by_uuid(character.current_room_uuid)
+    if room:
+        character.location = room
+        return
+
+    # Both halves, like the sending cascade: a home shard with no room
+    # beside it is not somewhere to send anyone, and forwarding on it would
+    # move a character to another instance to discover that there.
+    home_shard = character.home_shard
+    if home_shard in get_shards() and character.home_room_uuid:
+        character.current_shard = home_shard
+        character.current_room_uuid = character.home_room_uuid
+        if home_shard != here:
+            raise RoomOnAnotherShard(home_shard, character)
+
+        room = find_room_by_uuid(character.home_room_uuid)
+        if room:
+            character.location = room
+            return
+
+    default_shard = get_default_home_shard()
+    default_uuid = get_default_home_uuid()
+    character.current_shard = default_shard
+    character.current_room_uuid = default_uuid
+    if default_shard != here:
+        raise RoomOnAnotherShard(default_shard, character)
+
+    room = find_room_by_uuid(default_uuid)
+    if room:
+        character.location = room
+        return
+
+    raise PlacementFailed(
+        f"nothing places {character} on {here}. Their location was "
+        f"{tried_room!r}, their home was {tried_home!r} on "
+        f"{tried_home_shard!r}, and the default home {default_uuid!r} is not "
+        f"in this database either."
+    )
+
+
+#: Evennia's initial setup makes Limbo, and makes it second — so on any
+#: instance it set up, this is Limbo whatever the game has renamed it to.
+LIMBO_PK = 2
+
+
+def _place_superuser(character):
+    """Put a superuser in Limbo, whatever their location pair says.
+
+    A branch before the cascade rather than a row in it. A superuser is not
+    playing by the rules the cascade is written for: they can `tel`
+    anywhere the moment they arrive, so being routed by where their
+    character was buys them nothing, and always appearing in one known room
+    is worth more. It is also what makes a shard whose rooms carry no uuids
+    yet reachable at all — by the one person who can go and fix that.
+
+    **`DEFAULT_HOME` rather than a uuid**, and this is the one place a
+    dbref belongs: it is resolved on the instance already being stood on,
+    so it never has to mean anything across a database.
+
+    **Then object `#2`.** Where `DEFAULT_HOME` is at its own default the two
+    are the same lookup and this never fires; it fires where an operator
+    repointed it at a room that has since gone. Nothing checks that `#2` is
+    named Limbo, or is a room — a name is not what makes it the room, and
+    making it something else takes deliberate work whose whole cost is a
+    superuser standing inside that instead, one `tel` from anywhere.
+
+    **The location pair is not written.** Nothing resolved, so there is
+    nothing to record; it keeps what it held and restamps on their first
+    move like anyone's.
     """
     from django.conf import settings
+    from evennia.objects.models import ObjectDB
     from evennia.utils.search import search_object
 
     found = search_object(settings.DEFAULT_HOME)
-    if not found:
-        raise PlacementFailed(
-            f"{settings.DEFAULT_HOME} does not resolve in this database, so "
-            f"there is nowhere to put {character}."
-        )
-    character.location = found[0]
+    if found:
+        character.location = found[0]
+        return
+
+    limbo = ObjectDB.objects.filter(pk=LIMBO_PK).first()
+    if limbo:
+        character.location = limbo
+        return
+
+    raise PlacementFailed(
+        f"{character} is a superuser and this instance has no Limbo: "
+        f"DEFAULT_HOME is {settings.DEFAULT_HOME!r}, which does not resolve, "
+        f"and there is no object #{LIMBO_PK} either."
+    )
+
+
+def _this_instance():
+    """Which instance this is, as the deployment names it.
+
+    multiplex's accessor rather than a setting of ours: `check_settings`
+    already requires `SCALING_SHARDS` to be spelled exactly as each
+    instance's ``MULTIPLEX_INSTANCE_ID``, so a second setting for the same
+    fact would only give the two somewhere to disagree.
+    """
+    from evennia_portal_multiplex.config import get_instance_id
+
+    return get_instance_id()
 
 
 def account_for_ticket(ticket):
@@ -180,9 +342,16 @@ def reconstitute_for_ticket(session, ticket):
 
     **Three failures, three returns.** An account the archive does not
     hold, a character it does not hold, and a character that cannot be
-    placed. Each is a session this instance will not admit, and none of
-    them raises out through `load_sync_data` into AMP — where a player
-    sees nothing at all rather than being sent home with a message.
+    placed anywhere. Each is a session this instance will not admit, and
+    none of them raises out through `load_sync_data` into AMP — where a
+    player sees nothing at all rather than being sent home with a message.
+
+    **Two rise past here**, because the session override is the frame that
+    can act on them. `RoomOnAnotherShard` needs the session moved, and
+    `DuplicateRoomUuid` needs the player told; the caller's bounce to the
+    router is wrong for the first and incomplete for the second. The
+    account is attached to the first on its way through, because this is
+    the only frame that has both it and the exception.
     """
     from evennia_archive.api import NotArchived
 
@@ -212,7 +381,13 @@ def reconstitute_for_ticket(session, ticket):
         return account
 
     try:
-        place_in_world(character)
+        place_in_world(character, account)
+    except RoomOnAnotherShard as elsewhere:
+        # Attached here and re-raised: placement knows the shard and the
+        # character, and this frame is the only one that also has the
+        # account the transfer needs.
+        elsewhere.account = account
+        raise
     except PlacementFailed as failure:
         scaling_log(
             f"{character} arrived and could not be placed: {failure} The "
@@ -346,7 +521,7 @@ def transfer_to_instance(account, session, character, to_instance):
     # are not loadable that early.
     from evennia_archive.api import archive
 
-    from .config import ROLE_ROUTER, get_role
+    from .config import ROLE_ROUTER, get_role, get_shards
     from .mixins import is_instance_root
 
     if is_instance_root(account):
@@ -360,6 +535,20 @@ def transfer_to_instance(account, session, character, to_instance):
             "transferred."
         )
         return None
+
+    # Leaving is the moment the destination is known, and the stamp goes
+    # before the archive, which is what carries it. A no-op for the
+    # in-character path, where `to_instance` is what
+    # `ensure_location_for_transfer` just returned; it does the work for a
+    # consumer moving a character between shards, who would otherwise send
+    # one to shard1 still saying shard0 and have the arrival read that as a
+    # misdelivered session.
+    #
+    # Only for a shard. Going out of character transfers to the router, and
+    # a character is not *in* the router — it waits on the shard
+    # `current_shard` goes on naming.
+    if to_instance in get_shards():
+        character.current_shard = to_instance
 
     archive(account if get_role() == ROLE_ROUTER else character)
 

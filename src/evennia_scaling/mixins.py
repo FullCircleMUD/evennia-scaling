@@ -18,14 +18,21 @@ from .config import (
 from .log import scaling_log
 
 #: The Attribute key holding the other half of where a character is: which
-#: room, in the database of the shard `current_shard` names.
-CURRENT_ROOM_REF_KEY = "current_room_ref"
+#: room, in the world of the shard `current_shard` names. It holds the room's
+#: `scaling_room_uuid`, not a dbref — a dbref names a row in one database and
+#: means nothing in the next, so it survives neither a transfer nor a world
+#: rebuild.
+CURRENT_ROOM_UUID_KEY = "current_room_uuid"
 
 #: The same pair again, for where a character lives rather than where it is.
 #: `character.home` is a dbref and does not survive the archive, so a home
 #: that means anything across instances has to be stored this way.
 HOME_SHARD_KEY = "home_shard"
-HOME_ROOM_REF_KEY = "home_room_ref"
+HOME_ROOM_UUID_KEY = "home_room_uuid"
+
+#: The Attribute key holding a room's own identity — the value the two keys
+#: above point at. Assigned from the consumer's world source, never minted.
+ROOM_UUID_KEY = "scaling_room_uuid"
 
 #: The Attribute key naming where a character is in the game world.
 #: `AttributeProperty` takes its key from the attribute name, so this and the
@@ -77,6 +84,58 @@ class _ShardProperty(AttributeProperty):
         return value
 
 
+class _RoomUuidProperty(AttributeProperty):
+    """Refuses anything that is not a uuid string.
+
+    Declared twice, for the same reason `_ShardProperty` is: "is this a
+    uuid" is not specific to where a character is or where it lives.
+    """
+
+    def at_set(self, value, obj):
+        """Check the shape. What this returns is what is stored.
+
+        The meaning cannot be checked: which uuids exist is the consumer's
+        world, and the room named is on another instance. What can be
+        checked is that it is a uuid at all — a dbref or a room name here
+        would surface as a character arriving in the wrong place.
+
+        ``None`` is accepted, unlike a shard. Unset is a real state for a
+        room key: it is what a character has before anything stamps one,
+        and what the location cascade's last step leaves behind.
+
+        **Stored as given.** `evennia-world-builder` holds the matching
+        identity on the room — an author-supplied ``entity_id`` — and keeps
+        the string as written, absorbing the variation at lookup. A uuid
+        canonicalised here would stop matching a room whose ``entity_id``
+        was written in uppercase.
+
+        **A `uuid.UUID` object is refused**, though `uuid.UUID` would take
+        one back happily. A uuid travels as a string between these
+        libraries, and letting an object in means half the stored values
+        compare unequal to every string beside them.
+        """
+        import uuid
+
+        if value is None:
+            return None
+
+        if not isinstance(value, str):
+            raise ValueError(
+                f"{self._key} cannot be {value!r}. It names a room by its "
+                f"uuid, as a string."
+            )
+
+        try:
+            uuid.UUID(value)
+        except ValueError:
+            raise ValueError(
+                f"{self._key} cannot be {value!r}. It names a room by its "
+                f"uuid, and that is not one."
+            ) from None
+
+        return value
+
+
 class ScalingCharacterMixin(ArchivableCharacterMixin):
     """Records where a character is in the game world.
 
@@ -100,13 +159,14 @@ class ScalingCharacterMixin(ArchivableCharacterMixin):
         strattr=True,
     )
 
-    #: The other half of the pair: which room, in the database of the shard
+    #: The other half of the pair: which room, in the world of the shard
     #: above. No default — a room key means nothing without a shard beside
     #: it, so there is nothing useful to fall back to at read time.
     #:
-    #: Nothing validates it. It names a row in a database this instance
-    #: cannot see, so the only check available is that a value is present.
-    current_room_ref = AttributeProperty(default=None)
+    #: Its shape is checked and its meaning is not: the room it names is on
+    #: another instance, so the only question answerable here is whether it
+    #: is a uuid.
+    current_room_uuid = _RoomUuidProperty(default=None, strattr=True)
 
     #: Where the character lives, as the same pair. The shard defaults to
     #: the game's home shard; the room does not default, and its absence is
@@ -114,7 +174,7 @@ class ScalingCharacterMixin(ArchivableCharacterMixin):
     home_shard = _ShardProperty(
         default=get_default_home_shard, strattr=True
     )
-    home_room_ref = AttributeProperty(default=None)
+    home_room_uuid = _RoomUuidProperty(default=None, strattr=True)
 
     def ensure_location_for_transfer(self):
         """Complete where this character would be sent, and return the shard.
@@ -145,26 +205,176 @@ class ScalingCharacterMixin(ArchivableCharacterMixin):
         default home is a recovery, not a decision that this is where the
         character lives from now on.
 
+        **The third step names a shard and no room.** The one safe place is
+        this instance's ``DEFAULT_HOME``, a dbref belonging to whichever
+        instance is asked, so writing it into a field that holds uuids
+        would leave the arrival unable to tell which kind of value it is
+        holding. Leaving the room half unset is also the truer claim: this
+        knows the shard and does not know the room, and the arrival places
+        them at its own default home.
+
         Returns the shard, so a call site reads as the destination it is.
         """
-        from django.conf import settings
-
         shards = get_shards()
 
         def usable(shard, room):
             return shard in shards and room
 
-        if usable(self.current_shard, self.current_room_ref):
+        if usable(self.current_shard, self.current_room_uuid):
             return self.current_shard
 
-        if usable(self.home_shard, self.home_room_ref):
+        if usable(self.home_shard, self.home_room_uuid):
             self.current_shard = self.home_shard
-            self.current_room_ref = self.home_room_ref
+            self.current_room_uuid = self.home_room_uuid
             return self.current_shard
 
         self.current_shard = get_default_home_shard()
-        self.current_room_ref = settings.DEFAULT_HOME
+        self.current_room_uuid = None
         return self.current_shard
+
+    def at_post_move(self, source_location, move_type="move", **kwargs):
+        """Keep the location pair true as the character walks.
+
+        Evennia calls this after a move completes, and again at creation
+        with no source location — so a character built in a room is stamped
+        without a special case.
+
+        **The only seam that fits.** `at_object_receive` is the room's hook,
+        and rooms have no business writing to characters; overriding the
+        `location` property would catch a bare assignment too, but that
+        descriptor is Evennia's and replacing it is fragile. What this
+        misses is exactly that bare assignment, which is what the arrival
+        does — and there the uuid is already known, because it is what the
+        room was resolved from.
+
+        **`super()` first.** `DefaultCharacter` overrides this to make the
+        character look at the room it arrived in, and that is the one thing
+        a player notices the moment it stops happening.
+
+        **Nothing is stamped on a router.** A character is never *in* the
+        router, and the router's id is by definition not in
+        ``SCALING_SHARDS`` — so stamping there would raise on the shard
+        half, at character creation, which is a router operation.
+
+        **The room is asked, not tested for the mixin.** A room that
+        exposes a uuid has one, and where it came from is the consumer's
+        business.
+
+        **The shard half is never cleared.** `_ShardProperty` refuses
+        ``None``, and there is nothing to clear anyway: a character standing
+        in an unrecorded room is still on this shard. An incomplete pair is
+        what the cascade already reads as unusable, so the room half alone
+        carries the meaning.
+        """
+        super().at_post_move(source_location, move_type=move_type, **kwargs)
+
+        # multiplex's accessor rather than a setting of ours: `check_settings`
+        # already requires SCALING_SHARDS to be spelled exactly as each
+        # instance's MULTIPLEX_INSTANCE_ID, so a second setting for the same
+        # fact would only give the two somewhere to disagree.
+        from evennia_portal_multiplex.config import get_instance_id
+
+        from .config import (
+            ROLE_SHARD,
+            get_keep_location_in_unmarked_room,
+            get_role,
+        )
+
+        if get_role() != ROLE_SHARD:
+            return
+
+        room_uuid = getattr(self.location, ROOM_UUID_KEY, None)
+        if room_uuid is None and get_keep_location_in_unmarked_room():
+            return
+
+        self.current_room_uuid = room_uuid
+        self.current_shard = get_instance_id()
+
+
+class ScalingRoomMixin:
+    """Gives a room an identity that survives a world rebuild.
+
+    Mix into a room typeclass::
+
+        class Room(ScalingRoomMixin, DefaultRoom):
+            pass
+
+    A character's location travels as a room uuid, and this is the other
+    end of it. Only rooms a character can be sent to need one.
+
+    **The uuid is assigned, never minted.** A room minting its own would
+    mint a fresh one every time the world was rebuilt, which is exactly
+    when the identity has to hold still — the dbrefs change on a rebuild
+    and this is what survives them. The consumer's world source supplies
+    the value; a game using `evennia-world-builder` already has it as the
+    room's ``entity_id``.
+
+    No archive mixin, unlike the character and account ones. Rooms are
+    built from the consumer's world source and never archived.
+    """
+
+    #: Checked by the same property the character's two location halves
+    #: use, so there is one answer to "is this a uuid" in the library.
+    scaling_room_uuid = _RoomUuidProperty(default=None, strattr=True)
+
+
+class DuplicateRoomUuid(Exception):
+    """Raised when two rooms claim the same uuid.
+
+    A mistake in the consumer's world source rather than a state this
+    library can be in. Nothing here can choose between them, and choosing
+    silently would stand a character in a room that is not where the game
+    believes they are.
+    """
+
+
+def find_room_by_uuid(room_uuid):
+    """Return the live room carrying this uuid, or ``None``.
+
+    The other direction from `ScalingRoomMixin`: a uuid in, a room out.
+    Module-level rather than a method, because the caller has a uuid and no
+    room.
+
+    **``None`` is a normal answer.** The world may have been redeployed
+    without that room, or the uuid may name a room on another instance. A
+    falsy uuid returns ``None`` without a query, so a caller holding an
+    unstamped character does not have to guard.
+
+    **Matching ignores case.** Neither copy is canonicalised — the room's
+    value is the consumer's string as written and the character's is
+    whatever was stamped from it — so the two can differ in case while
+    naming one uuid.
+
+    Raises `DuplicateRoomUuid` when more than one room carries it, naming
+    both, because fixing it means finding the two colliding entries in the
+    world source.
+    """
+    if not room_uuid:
+        return None
+
+    from evennia.objects.models import ObjectDB
+
+    found = list(
+        ObjectDB.objects.filter(
+            db_attributes__db_key=ROOM_UUID_KEY,
+            db_attributes__db_strvalue__iexact=str(room_uuid),
+        ).values_list("id", flat=True)
+    )
+
+    if not found:
+        return None
+
+    if len(found) > 1:
+        dbrefs = ", ".join(f"#{pk}" for pk in found)
+        raise DuplicateRoomUuid(
+            f"{room_uuid!r} is carried by more than one object ({dbrefs}). "
+            f"A room uuid names one room, and nothing here can choose "
+            f"between them."
+        )
+
+    # Fetched by primary key so the handle is the live typeclass instance,
+    # with its attributes and handlers, rather than a bare row.
+    return ObjectDB.objects.get(pk=found[0])
 
 
 def is_instance_root(account):
