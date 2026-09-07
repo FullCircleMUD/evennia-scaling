@@ -42,9 +42,6 @@ For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 arriving, coming back and placement are built and tested. Not finished: nothing gives a new character a
 starting room. See [docs/progress.md](docs/progress.md).
 
-`libraries/evennia-scaling-OLD/` is a reference to read, **never a source to copy from**. It answers
-this problem a different way; anything taken from it is discussed and agreed first.
-
 ## Where to read first
 
 1. [docs/test-plan.md](docs/test-plan.md) — the cases the library commits to. **A behavioural change
@@ -124,9 +121,9 @@ owner**. They are not a place to forward-design the system from first principles
 3. **Smaller is better.** Three discussed points captured faithfully beat three discussed points plus
    seven invented ones.
 
-**The tempting sources of unasked-for answers are `evennia-scaling-OLD` and `evennia-shards`.** Both
-answer this problem differently, so both have shapes ready to be lifted. A shape lifted from either is
-an invention unless it has been discussed here.
+**The tempting source of unasked-for answers is `evennia-shards`.** It answers this problem differently,
+so it has shapes ready to be lifted. A shape lifted from it is an invention unless it has been discussed
+here.
 
 ## Repository layout
 

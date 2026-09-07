@@ -62,8 +62,13 @@ That leaves one thing this rule depends on: a new character has to reach the arc
 sent anywhere, because leaving the router does not archive it. `evennia-archive` stores an account and
 a character at the hook that mints their identity, so it is there from the moment it exists.
 
-## What it does not cover
+## Why the router can restore without asking
 
-A character missing from the router looks the same whether it was stranded by an ungraceful exit or is
-being played on a shard right now. The router cannot tell them apart on its own
-[TBD — needs discussion: this needs the shard to say so].
+A session is in one place at a time. Going in character moves it to a shard and coming back moves it
+home, so an account logging in on the router has its player *here* — and a character missing from that
+account's roster is one that did not come home, not one being played somewhere.
+
+That is what lets the router restore a missing character outright rather than interrogating the shards
+about who holds what. A shard that still has the character from a dropped connection archived it on the
+way down, so what the router restores is current; and the shard's own copy is what the next arrival
+returns, so the two never diverge.

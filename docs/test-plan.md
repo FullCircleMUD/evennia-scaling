@@ -243,12 +243,11 @@ character is still only in the archive. Login is where that is noticed and fixed
 one unchanged, and Evennia's `add` skips one already on the roster — so it restores what is missing and
 disturbs nothing else.
 
-**Missing can also mean "being played on a shard right now."** A player linkdead on a shard who
-reconnects to the router looks identical from here, and restoring then puts a stale copy of a live
-character on the router. It recovers: the archive stays authoritative, and going in character rebuilds
-from it. Until then the select menu shows an old copy
-[TBD — needs discussion: whether the router should be able to tell the two apart, which needs the shard
-to say so].
+**Restoring is right without asking any shard who holds what.** A session is in one place at a time, so
+an account logging in on the router has its player here and a character missing from the roster is one
+that did not come home. The linkdead case looks identical from here and needs no distinction: the shard
+archived the character on the way down, so what the router restores is current, and the shard's own copy
+is what the next arrival returns — the two never diverge.
 
 That local lookup is a second tie to the username, and it is not a seam. A consumer who overrides
 `find_in_archive` to identify accounts some other way must override this method too, or the guard is

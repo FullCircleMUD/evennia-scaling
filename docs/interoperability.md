@@ -10,7 +10,9 @@ is clear in terms of what this library does. "No known issues" is not a clearanc
 
 ## evennia-ai-memory
 
-`[TBD — needs discussion: not yet assessed.]`
+**No coupling.** What an NPC remembers is an NPC's business, and an NPC is not a thing this library
+moves — only a player's character and its account travel between instances. An NPC stays in the world
+its instance holds.
 
 ## evennia-archive
 
@@ -26,9 +28,34 @@ The archive must be **shared storage**, reachable by every instance — a databa
 This is the one thing instances do share, and the whole approach rests on it: without it the archive
 key minted on one instance names nothing on another.
 
+## evennia-equipment
+
+**No coupling, and one constraint that decides how a game recovers a character.**
+
+**A transfer carries the character and nothing it is holding.** The archive stores the character's own
+row, its Attributes and its tags. Carried objects are separate rows that point at the character through
+`db_location`, which is one of the references the archive drops — so a character is rebuilt on the
+destination with empty hands.
+
+From the character's side those objects are gone. Evennia's own `delete()` calls `clear_contents()`
+first, so the rows are not orphaned — they are moved to their home or the default home before the
+character's row goes. But that is a room on the instance being left, which the character cannot reach
+from where they are going.
+
+**So a game needs a record of what a character owns that is not an Evennia object.** Objects are
+per-instance; ownership has to outlive them. Something says what the character owns, and something puts
+what is owned back into the slots it belongs in — two jobs, neither of them this library's. It moves a
+character; a game weaves the rest.
+
+**What does travel is this library's own state.** Wear slots and carrying capacity are
+`AttributeProperty`, so they come through the round trip. A slot recording *which object* is worn holds
+a reference to a row that does not exist on the destination, so what survives is the shape of the
+character's equipment and not its contents — which is the same statement as above from the other side.
+
 ## evennia-llm-service
 
-`[TBD — needs discussion: not yet assessed.]`
+**No coupling.** It calls a model on behalf of whatever asks. This library moves characters and accounts
+between instances and holds nothing a request would carry.
 
 ## evennia-message-bus
 
@@ -51,7 +78,9 @@ the session leaves.
 
 ## evennia-mob-spawner
 
-`[TBD — needs discussion: not yet assessed.]`
+**No coupling.** Mobs belong to the world an instance holds and never travel; this library moves only a
+player's character and its account. A spawner on each instance populates that instance, and neither
+knows about the other.
 
 ## evennia-portal-multiplex
 
@@ -87,14 +116,43 @@ shared database. The intent is to withdraw shards from PyPI and make this the pr
 
 That is the direction while this library keeps proving out, not a commitment.
 
+## evennia-survival
+
+**No coupling.** Hunger and thirst are `AttributeProperty` on the character, so they come through the
+archive and a character arrives as hungry as it left. Nothing this library does touches them.
+
+**The clocks are per-instance, and a character only ages where it is.** The two tickers are services on
+the instance running them, so a character on `shard1` is aged by `shard1`'s clock. A character with no
+instance holding it — sitting in the archive between a departure and an arrival, or on the router while
+its player is out of character — is not ticked by anybody.
+
+Whether that matters is the game's call, not this library's. A game that wants hunger to advance while a
+player is logged out has that question already, because Evennia only ticks what is loaded; instances
+change the answer's shape and not the question.
+
 ## evennia-targeting
 
-`[TBD — needs discussion: not yet assessed.]`
+**No coupling.** Resolving what a command means by "the guard" is a question about one room on one
+instance, answered and finished within a single command. Nothing it works out is state a character
+carries anywhere.
 
 ## evennia-world-builder
 
-`[TBD — needs discussion: not yet assessed.]`
+**No coupling, and the most useful thing to co-install.** This library needs every room a character can
+be sent to carry a `scaling_room_uuid`, assigned by the game and reproduced whenever the world is
+rebuilt — because that is the only thing about a room that survives both a rebuild and the crossing to
+another instance's database.
+
+World-builder already holds exactly that: an author-supplied `entity_id`, declared in YAML, stable
+across redeploys by design. A game building its world with it has the values already and needs only to
+put them where this library reads them.
+
+**It is not a dependency, and the uuid is not its to supply.** Any world source can assign them — a
+fixture script, a migration, a builder command. What this library requires is that the value is the same
+after a rebuild as before it, and that is a property of how a game builds its world rather than of which
+tool it uses.
 
 ## evennia-yaml-reader
 
-`[TBD — needs discussion: not yet assessed.]`
+**No coupling.** It reads YAML. Nothing this library does involves a file, and nothing it moves came
+from one.
