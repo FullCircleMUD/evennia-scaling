@@ -3087,6 +3087,100 @@ class TestOOCLocks(unittest.TestCase):
             settings.AT_SERVER_STARTSTOP_MODULE = original
 
 
+class TestOOCLockAccess(TestCase):
+    """LK — the locks as Evennia resolves them, rather than as strings.
+
+    `LK-04` to `LK-06` read the lockstring off the class and check the
+    install. These run the lock: the same `access` call `cmdparser` makes
+    when it filters matches, against a real account.
+    """
+
+    #: Creating an account mints its archive identity, which is written to
+    #: the archive database — and Django blocks a test from touching an
+    #: alias it has not declared.
+    databases = {"default", "archive"}
+
+    _next = 0
+
+    def setUp(self):
+        """Empty Evennia's identity map, as every object-creating test does."""
+        from evennia.utils.idmapper.models import flush_cache
+
+        super().setUp()
+        flush_cache()
+
+    def _account(self):
+        """A player account, created as a consumer's would be.
+
+        **Not a superuser**, deliberately: a superuser bypasses every lock,
+        so both cases below would pass without the lock being consulted at
+        all. `create_account` gives the default account permission, which is
+        the `Player` four of the seven lockstrings also ask for — so a
+        refusal here is about being in character and nothing else.
+        """
+        from evennia.utils.create import create_account
+
+        from tests.game_typeclasses import ScalingAccount
+
+        TestOOCLockAccess._next += 1
+        name = f"locke{TestOOCLockAccess._next}"
+        return create_account(
+            name,
+            f"{name}@example.com",
+            "testpassword123",
+            typeclass=ScalingAccount,
+        )
+
+    def _built(self, account):
+        """Each locked command, instantiated with what a lock check reads.
+
+        ``obj`` is set because Evennia's `is_ooc` resolves the account from
+        it — `cmdhandler` sets it when a cmdset is built, and a bare
+        instance has it as ``None``, which the lockfunc reads as "no
+        account" and passes unconditionally.
+        """
+        from evennia_scaling import commands
+
+        return {
+            name: _with_obj(getattr(commands, name)(), account)
+            for name in _LOCKED
+        }
+
+    def test_lk_17_the_seven_are_refused_in_character(self):
+        """LK-17: the lock is consulted while something is puppeted."""
+        account = self._account()
+        session = _LockSession(puppet=object())
+
+        for name, command in self._built(account).items():
+            with self.subTest(command=name):
+                self.assertFalse(
+                    command.access(account, "cmd", session=session)
+                )
+
+    def test_lk_18_the_seven_are_allowed_out_of_character(self):
+        """LK-18: and says yes when nothing is.
+
+        The direction that fails when the lock is not being consulted at
+        all: an unresolvable lockfunc drops the whole lockstring, and a
+        command left with no `cmd` lock is refused by default — which
+        `LK-17` cannot tell from working.
+        """
+        account = self._account()
+        session = _LockSession()
+
+        for name, command in self._built(account).items():
+            with self.subTest(command=name):
+                self.assertTrue(
+                    command.access(account, "cmd", session=session)
+                )
+
+
+def _with_obj(command, account):
+    """The command, with the account a lock check resolves through it."""
+    command.obj = account
+    return command
+
+
 class TestNickCommand(TestCase):
     """LK — the replaced `nick` command.
 

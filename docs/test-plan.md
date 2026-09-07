@@ -44,6 +44,7 @@ The fake objects the suite needs, named and purposed.
 | `TestArrival` | Its own class for `SS-11` to `SS-16`: the rest of `SS` uses a stand-in session, and these need real accounts, characters and an archive to rebuild from. It reads ids **before** the arrival runs — the rebuild deletes and restores, so an object a test created is gone and its id reads as `None` |
 | `_PlayingSession` | A Server session as the sending paths see it — an address and what it puppets |
 | `_FakeSession` | A Server session as the arrival path sees it — sync data, `logged_in`, `uid` |
+| `_LockSession` | A session as a `cmd` lock check is given it — what it puppets, and nothing else. Evennia's `is_ooc` reads that through `account.get_puppet(session)`, which returns `session.puppet` |
 
 Tests that create Evennia objects flush the identity map in `setUp`. Evennia's models are
 `SharedMemoryModel`, so a query returns a cached instance keyed on (class, primary key), and that cache
@@ -1056,10 +1057,22 @@ builder-only does that themselves.
 | LK-14 | `nick/clearall` out of character clears the account's nicks | test_lk_14_clearall_out_of_character_clears_the_account |
 | LK-15 | Every other switch is Evennia's — a nick set in character still lands on the character | test_lk_15_setting_a_nick_still_reaches_evennias_func |
 | LK-16 | `ready()` points `general.CmdNick` at the override | test_lk_16_ready_points_nick_at_the_override |
+| LK-17 | In character, each of the seven is refused — the lock is consulted and says no | test_lk_17_the_seven_are_refused_in_character |
+| LK-18 | Out of character, each of the seven is allowed — the lockfunc resolves and says yes | test_lk_18_the_seven_are_allowed_out_of_character |
 
 
-`LK-01`, `LK-02` and `LK-03` are retired and their IDs are not reused. The next case in this section
-is `LK-17`.
+`LK-01`, `LK-02` and `LK-03` are retired and their IDs are not reused.
+
+**`LK-17` and `LK-18` run the lock rather than reading it.** `LK-04` to `LK-06` check the lockstring is
+right and the class is installed, and all three pass while the restriction does not work at all — a
+lockfunc Evennia cannot resolve makes it drop the whole lockstring, and a command with no `cmd` lock is
+refused by default. `LK-17` reads that as success, which is why the pair is written in both directions:
+`LK-18` is the one that fails when the lock is not being consulted.
+
+Both go through `access(account, "cmd", session=...)`, the call `cmdparser` makes when it filters
+matches, with a real account rather than a stand-in — a superuser bypasses every lock, and four of the
+seven want `Player` as well, so an account that is neither would pass for reasons that have nothing to
+do with being out of character.
 
 `LK-05` is the one that catches a copied lockstring with a clause dropped. It asserts no *code* changed
 — the parent's `func` and `parse` are still what run — rather than "defines only `locks`", because
