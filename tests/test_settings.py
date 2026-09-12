@@ -29,6 +29,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 INSTALLED_APPS = list(INSTALLED_APPS) + [  # noqa: F405
     "evennia_archive",
     "evennia_message_bus",
+    "evennia_portal_multiplex",
     "evennia_scaling",
 ]
 
@@ -83,11 +84,17 @@ SCALING_ROLE = "router"
 # cares about one of these overrides it.
 SCALING_ROUTER_ID = "router"
 
+# Where an unbound session lands. Multiplex refuses to boot without it, and
+# it names the router, as SCALING_ROUTER_ID above does — installing.md
+# requires those two to agree.
+MULTIPLEX_DEFAULT_INSTANCE = SCALING_ROUTER_ID
+
 # This instance's name, as the bus and the multiplexer know it. Both refuse
 # to boot without one, and the library reads multiplex's for its startup
 # line — so the suite declares them as any configured instance would, and
-# equal, which is what installing.md requires of a deployment.
-MULTIPLEX_INSTANCE_ID = "router"
+# equal, which is what installing.md requires of a deployment. This instance
+# is the router, so its own name is the shared one.
+MULTIPLEX_INSTANCE_ID = MULTIPLEX_DEFAULT_INSTANCE
 MESSAGEBUS_INSTANCE_ID = MULTIPLEX_INSTANCE_ID
 
 # The typeclasses the library validates at boot. Stubs carrying the mixins,
