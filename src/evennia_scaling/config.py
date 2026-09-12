@@ -422,7 +422,20 @@ def check_settings():
     _check_typeclasses(problems)
 
     if problems:
-        raise ImproperlyConfigured(" ".join(problems))
+        # Logged before the raise, and the same text both ways. The
+        # exception surfaces wherever the raise lands — for a daemonised
+        # Server, not beside the other lines this library wrote — so the
+        # file carries it too rather than the operator reconciling two
+        # accounts of one refusal.
+        #
+        # Imported inside the branch, never at this module's scope: a log
+        # import at module scope runs when the library is first imported,
+        # which can be while the consumer's settings module is executing.
+        from .log import scaling_log
+
+        message = " ".join(problems)
+        scaling_log(message, level="ERROR")
+        raise ImproperlyConfigured(message)
 
 
 ######################################################################

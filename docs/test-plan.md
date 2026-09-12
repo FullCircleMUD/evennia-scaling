@@ -164,6 +164,25 @@ Neither is checked at boot, and neither gets a default. Evennia declares both in
 `settings_default`, so an instance that reaches this library at all has them — a default of ours would
 be a second opinion about a value Evennia already owns.
 
+**A boot refusal is logged before it is raised, and `CF-20`–`CF-23` assert delivery rather than
+intent.** `check_settings()` runs from `AppConfig.ready()` during `django.setup()`, before there is a
+reactor — the window `evennia-logging-extension` exists to write, and the one where Evennia's own
+`log_file` would leave a zero-byte file. So the cases read the line back from the suite's `LOG_DIR`
+rather than mocking `scaling_log`: a mocked shim asserts only that a call was made, never that
+anything reached disk.
+
+The refusal is the one thing worth logging here. An instance that will not start has told the operator
+through the exception, but the exception surfaces wherever the raise lands — which for a daemonised
+Server is not where anyone looks first, and not beside the other lines this library wrote. Both
+channels carry the same text on purpose, so the file and the console are not two accounts to reconcile.
+
+**The problems are logged joined, as they are raised.** `check_settings()` collects every problem
+before refusing, so a consumer fixes all of them in one pass rather than one per restart; splitting
+them across log lines would undo that at the moment the operator is reading.
+
+A clean boot logs nothing. Recording that the settings were fine on every start of every instance
+would bury the refusals in exactly the file kept for finding them.
+
 | ID | Case | Test function |
 |---|---|---|
 | CF-01 | The ticket lifetime defaults to ten seconds when the setting is absent | test_cf_01_the_ticket_lifetime_defaults_to_ten_seconds |
@@ -185,6 +204,10 @@ be a second opinion about a value Evennia already owns.
 | CF-17 | A `SCALING_START_LOCATION_UUID` that does not parse as a uuid is refused, naming the value | test_cf_17_a_start_location_uuid_that_is_not_a_uuid_is_refused |
 | CF-18 | `get_default_home()` returns Evennia's `DEFAULT_HOME`, and follows a consumer who overrides it | test_cf_18_the_default_home_is_read_through_an_accessor |
 | CF-19 | `get_account_typeclass_path()` returns Evennia's `BASE_ACCOUNT_TYPECLASS`, and follows a consumer who overrides it | test_cf_19_the_account_typeclass_path_is_read_through_an_accessor |
+| CF-20 | A refusal is logged to disk at ERROR before the raise — asserted by reading the file back, never by mocking the shim | test_cf_20_a_refusal_is_logged_to_disk_at_error |
+| CF-21 | The log line and the exception carry the same text, so the file and the console tell one story | test_cf_21_the_log_line_and_the_exception_carry_the_same_text |
+| CF-22 | Several problems at once are logged as they are raised — one line carrying all of them, not one line each | test_cf_22_several_problems_are_logged_as_one_line |
+| CF-23 | An instance that boots cleanly logs no refusal, so the file holds only real ones | test_cf_23_a_clean_boot_logs_no_refusal |
 
 ### AC — the account mixin
 

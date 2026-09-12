@@ -9,6 +9,7 @@ Discovered by Django's test runner via runtests.py at the repository root.
 """
 
 import json
+import os
 import unittest
 from datetime import timedelta
 
@@ -17,6 +18,36 @@ from django.test import TestCase, override_settings
 
 import evennia_scaling
 from evennia_scaling.tickets import create_ticket
+
+
+def read_back_logs():
+    """Everything under the suite's LOG_DIR, as one string.
+
+    Delivery is asserted by reading the file, never by mocking the shim: a
+    mocked shim says a call was made and nothing about whether a line landed.
+    """
+    contents = []
+    for name in sorted(os.listdir(settings.LOG_DIR)):
+        path = os.path.join(settings.LOG_DIR, name)
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                contents.append(handle.read())
+    return "".join(contents)
+
+
+def clear_logs():
+    """Empty LOG_DIR's files, so a line read back was written by this test.
+
+    Truncated, never deleted. Evennia caches the file handle, and a removed
+    file leaves that handle appending to an unlinked inode — every later
+    write then vanishes silently. Append-mode handles seek to the end, so a
+    truncated file stays live.
+    """
+    for name in os.listdir(settings.LOG_DIR):
+        path = os.path.join(settings.LOG_DIR, name)
+        if os.path.isfile(path):
+            with open(path, "w"):
+                pass
 
 
 def _a_home():
@@ -528,6 +559,76 @@ class TestConfig(TestCase):
             self.assertEqual(
                 get_account_typeclass_path(), "world.accounts.Theirs"
             )
+
+    @override_settings(SCALING_ROLE=None)
+    def test_cf_20_a_refusal_is_logged_to_disk_at_error(self):
+        """CF-20: read back from disk, never by mocking the shim.
+
+        `check_settings()` runs before there is a reactor, which is the
+        window the extension exists to write and the one Evennia's own
+        `log_file` drops. A mocked shim would pass while nothing landed.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        clear_logs()
+        with self.assertRaises(ImproperlyConfigured):
+            check_settings()
+
+        logged = read_back_logs()
+        self.assertIn("[ERROR]", logged)
+        self.assertIn("SCALING_ROLE", logged)
+
+    @override_settings(SCALING_ROLE=None)
+    def test_cf_21_the_log_line_and_the_exception_carry_the_same_text(self):
+        """CF-21: one story, not two accounts to reconcile.
+
+        The exception surfaces wherever the raise lands, which for a
+        daemonised Server is not beside the other lines this library wrote.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        clear_logs()
+        with self.assertRaises(ImproperlyConfigured) as caught:
+            check_settings()
+
+        self.assertIn(str(caught.exception), read_back_logs())
+
+    @override_settings(SCALING_ROLE=None, SCALING_SHARDS=None)
+    def test_cf_22_several_problems_are_logged_as_one_line(self):
+        """CF-22: collected, so a consumer fixes them in one pass.
+
+        Splitting them across lines would undo that at the moment the
+        operator is reading.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        clear_logs()
+        with self.assertRaises(ImproperlyConfigured):
+            check_settings()
+
+        logged = read_back_logs()
+        self.assertIn("SCALING_ROLE", logged)
+        self.assertIn("SCALING_SHARDS", logged)
+        self.assertEqual(logged.count("[ERROR]"), 1)
+
+    def test_cf_23_a_clean_boot_logs_no_refusal(self):
+        """CF-23: the file holds only real ones.
+
+        Recording that the settings were fine, on every start of every
+        instance, would bury the refusals in the file kept for finding them.
+        """
+        from evennia_scaling.config import check_settings
+
+        clear_logs()
+        check_settings()
+
+        self.assertEqual(read_back_logs(), "")
 
 
 class TestAccountMixin(TestCase):
