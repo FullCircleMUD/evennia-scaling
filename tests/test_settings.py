@@ -32,38 +32,38 @@ INSTALLED_APPS = list(INSTALLED_APPS) + [  # noqa: F405
     "evennia_scaling",
 ]
 
-# One database. The library owns no tables yet; when it does, this grows a
-# second alias and a router, as the siblings have.
-# Each alias needs its own TEST name. Two ``:memory:`` databases are the
-# same database, so without these the archive is the live database under
-# another name and every round trip passes for the wrong reason.
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": ":memory:",
         "TEST": {"NAME": "file:evennia_scaling_test_default?mode=memory&cache=shared"},
     },
-    # The archive. A second database with the same schema, holding accounts
-    # and characters between instances — the library looks accounts up in it
-    # and rebuilds them from it, so the suite needs a real one.
-    "archive": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": ":memory:",
-        "TEST": {"NAME": "file:evennia_scaling_test_archive?mode=memory&cache=shared"},
-    },
-    # The bus. Shared storage too — a message written by one instance is
-    # read by another.
-    "messagebus": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": ":memory:",
-        "TEST": {"NAME": "file:evennia_scaling_test_bus?mode=memory&cache=shared"},
-    },
 }
 
-DATABASE_ROUTERS = [
-    "evennia_archive.db_router.ArchiveRouter",
-    "evennia_message_bus.db_router.MessageBusRouter",
-]
+# The archive and bus aliases and their routers come from the cascade,
+# resolved from the siblings' own db_specs — the suite exercises the real
+# consumer path on every run. The environment is {} rather than os.environ
+# so the suite always lands on the SQLite rung, whatever DATABASE_URLs the
+# machine carries.
+from evennia_database_cascade import configure  # noqa: E402
+
+DATABASES, DATABASE_ROUTERS = configure(DATABASES, INSTALLED_APPS, GAME_DIR, {})
+
+# The TEST names are not decoration. Two aliases both saying ":memory:" look
+# like one database to Django's test runner, which then treats the second as
+# a mirror of the first — so the archive would be the live database under
+# another name and every round trip would pass for the wrong reason.
+# Distinct shared-cache URIs keep them genuinely separate. Re-applied here
+# because configure() resolves each alias to a real .db3 file, and the suite
+# wants them in memory like the game database.
+DATABASES["archive"]["NAME"] = ":memory:"
+DATABASES["archive"]["TEST"] = {
+    "NAME": "file:evennia_scaling_test_archive?mode=memory&cache=shared"
+}
+DATABASES["messagebus"]["NAME"] = ":memory:"
+DATABASES["messagebus"]["TEST"] = {
+    "NAME": "file:evennia_scaling_test_bus?mode=memory&cache=shared"
+}
 
 # `list(...)` rather than `+=`: Evennia declares this as a tuple.
 #
