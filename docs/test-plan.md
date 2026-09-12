@@ -1245,6 +1245,23 @@ in hand.
 gap to close: naming the character is the right habit the moment an account has more than one, and a
 bare `ic` that silently picks the wrong one is how a player loses track of which they are playing.
 
+**One of the three ways `token_from` returns nothing is logged, and the other two are not.** The
+function answers the same way for a payload that is absent, one that cannot be parsed, and one that
+parses but carries no key of ours — and that stays right, because the arrival must not break to report
+a problem. What differs is whether anything went wrong.
+
+- **Absent** is every ordinary connection. Logging it would bury the real ones.
+- **No key of ours** is another library's payload, or none of multiplex's consumers put anything in
+  it. Not our business.
+- **Unreadable** is the anomaly: multiplex carried a payload, and it is not what it should be. The
+  player is bounced to a login screen instead of arriving in character, and without a line here
+  nothing anywhere says why — which is the report "my transfer made me log in again" with no thread
+  to pull.
+
+It is logged at WARN rather than ERROR: nothing is broken, the session is admitted as an ordinary
+connection, and the game carries on. `trace=True`, because the `except` has the parse error in hand
+and "unreadable" without it says only what we already knew.
+
 **`uid` and `logged_in` are set rather than calling `sessionhandler.login`.** Evennia's `portal_connect`
 checks that pair a few lines after `load_sync_data` returns and logs the session in itself; calling it
 here would fire every login hook twice. Setting `logged_in` also suppresses the login screen, which
@@ -1262,6 +1279,9 @@ placement that worked, one that failed everywhere, and one that resolved somewhe
 | SS-04 | A session already carrying `logged_in` and `uid` is left alone | test_ss_04_an_authenticated_session_is_left_alone |
 | SS-05 | The token is read from multiplex's payload | test_ss_05_reads_the_token_from_the_payload |
 | SS-06 | A payload that is absent, unparseable, or carries no token yields none | test_ss_06_an_unreadable_payload_yields_no_token |
+| SS-26 | An unreadable payload is logged at WARN carrying the parse error, and still yields no token — the arrival is not broken to report it | test_ss_26_an_unreadable_payload_is_logged |
+| SS-27 | An absent payload is not logged. Every ordinary connection presents none | test_ss_27_an_absent_payload_is_not_logged |
+| SS-28 | A readable payload carrying no ticket of ours is not logged. It belongs to another library | test_ss_28_a_payload_without_our_key_is_not_logged |
 | SS-07 | A session carrying a token drains the bus before redeeming | test_ss_07_a_ticketed_session_drains_the_bus_first |
 | SS-08 | A session carrying no token does not drain the bus | test_ss_08_an_unticketed_session_does_not_drain_the_bus |
 | SS-09 | A shard sends a session it cannot admit to the router | test_ss_09_a_shard_sends_an_unadmitted_session_to_the_router |

@@ -3731,6 +3731,60 @@ class TestServerSession(TestCase):
                     session.load_sync_data({})
                 redeeming.assert_called_once_with(None)
 
+    def test_ss_26_an_unreadable_payload_is_logged(self):
+        """SS-26: the one anomaly of the three, read back from disk.
+
+        Multiplex carried a payload and it is not what it should be. The
+        player is bounced to a login screen instead of arriving in
+        character, and without this line nothing anywhere says why.
+
+        WARN, not ERROR: the session is admitted as an ordinary connection
+        and the game carries on. The traceback comes with it because the
+        `except` has the parse error in hand.
+        """
+        from evennia_portal_multiplex.move import PAYLOAD_KEY
+
+        from evennia_scaling.sessions import token_from
+
+        clear_logs()
+        session = self._built(server_data={PAYLOAD_KEY: "not json at all"})
+        self.assertIsNone(token_from(session))
+
+        logged = read_back_logs()
+        self.assertIn("[WARN]", logged)
+        self.assertIn("Traceback", logged)
+
+    def test_ss_27_an_absent_payload_is_not_logged(self):
+        """SS-27: every ordinary connection presents none.
+
+        Pinned because a silence nobody wrote down gets helpfully filled in
+        later, and this function runs on every session that arrives.
+        """
+        from evennia_scaling.sessions import token_from
+
+        clear_logs()
+        self.assertIsNone(token_from(self._built(server_data={})))
+
+        self.assertEqual(read_back_logs(), "")
+
+    def test_ss_28_a_payload_without_our_key_is_not_logged(self):
+        """SS-28: another library's payload, or nobody's.
+
+        Multiplex's payload is a dict any consumer may put keys in, so ours
+        being absent from a readable one says nothing went wrong.
+        """
+        from evennia_portal_multiplex.move import PAYLOAD_KEY
+
+        from evennia_scaling.sessions import token_from
+
+        clear_logs()
+        session = self._built(
+            server_data={PAYLOAD_KEY: json.dumps({"something_else": "x"})}
+        )
+        self.assertIsNone(token_from(session))
+
+        self.assertEqual(read_back_logs(), "")
+
     def test_ss_07_a_ticketed_session_drains_the_bus_first(self):
         """SS-07: the session is faster than the bus's polling interval.
 

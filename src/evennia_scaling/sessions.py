@@ -34,6 +34,12 @@ def token_from(session):
     raises on a corrupt string and this runs on every session that arrives
     with a payload, so an unreadable one is treated as untickered rather than
     breaking the arrival.
+
+    **Only the unreadable one is logged.** An absent payload is every
+    ordinary connection and a readable one without our key belongs to
+    another consumer of multiplex's payload — neither is anything gone
+    wrong, and recording them would bury the one that is. See `SS-26` to
+    `SS-28`.
     """
     payload = (getattr(session, "server_data", None) or {}).get(PAYLOAD_KEY)
     if not payload:
@@ -41,6 +47,20 @@ def token_from(session):
     try:
         return json.loads(payload).get(SCALING_TICKET_KEY)
     except (TypeError, ValueError):
+        # WARN rather than ERROR: the session is admitted as an ordinary
+        # connection and the game carries on. What the player sees is a
+        # login screen where they expected to arrive in character, and
+        # without this line nothing anywhere says why.
+        #
+        # `trace=True` because the parse error is in hand here, and
+        # "unreadable" without it says only what the line itself already
+        # says.
+        scaling_log(
+            f"a session arrived carrying a payload that cannot be read, so "
+            f"it is treated as untickered: {payload!r}",
+            level="WARN",
+            trace=True,
+        )
         return None
 
 
