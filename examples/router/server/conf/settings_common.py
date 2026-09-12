@@ -73,6 +73,7 @@ from server.conf.settings import *  # noqa: F401, F403, E402
 
 INSTALLED_APPS = list(INSTALLED_APPS) + [  # noqa: F405
     "evennia_archive",
+    "evennia_database_cascade",
     "evennia_message_bus",
     "evennia_portal_multiplex",
     "evennia_scaling",
@@ -154,31 +155,22 @@ SCALING_DEFAULT_HOME_UUID = "a1000000-0000-4000-8000-000000000001"
 # Databases
 ######################################################################
 #
-# Two aliases beyond the game's own. Both are shared storage: a character
-# archived on one instance is rebuilt on another, and a message sent by one
-# is read by another. The paths are the same string on every instance — on
-# the shards they resolve through a symlink to the router's copy.
-
-DATABASES["archive"] = {  # noqa: F405
-    "ENGINE": "django.db.backends.sqlite3",
-    "NAME": os.path.join(GAME_DIR, "server", "archive.db3"),  # noqa: F405
-}
-
-from evennia_message_bus.config import messagebus_database  # noqa: E402
-
-DATABASES["messagebus"] = messagebus_database(  # noqa: F405
-    os.path.join(GAME_DIR, "server", "messagebus.db3")  # noqa: F405
-)
-
-# Append, never assign: each library ships its own router and a consumer
-# running two of them needs both in the list.
-DATABASE_ROUTERS = list(globals().get("DATABASE_ROUTERS", []))
-for _router in (
-    "evennia_archive.db_router.ArchiveRouter",
-    "evennia_message_bus.db_router.MessageBusRouter",
-):
-    if _router not in DATABASE_ROUTERS:
-        DATABASE_ROUTERS.append(_router)
+# Two aliases beyond the game's own, both declared by the siblings and
+# resolved by the cascade from their db_specs: with no DATABASE_URL set for
+# either, each lands on `server/<alias>.db3`. Both are shared storage: a
+# character archived on one instance is rebuilt on another, and a message
+# sent by one is read by another. The paths are the same string on every
+# instance — on the shards they resolve through a symlink to the router's
+# copy.
+#
+# **The configure() call is NOT made here.** It lives in each instance's own
+# settings file, after its star-import of this module returns. Called from
+# inside this module, anything configure() touches that reads the settings —
+# Evennia's logger arrives that way, via package resolution — makes Django
+# rebuild them from the instance's top-level module mid-import, while its
+# namespace is still empty, and the boot dies on an AttributeError for a
+# default that is in fact set. Inputs are per-instance by design: GAME_DIR
+# differs on every instance, and with it each alias's resolved path.
 
 ######################################################################
 # Locks

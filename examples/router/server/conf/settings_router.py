@@ -20,6 +20,14 @@ character, and going in character from.
 
 from server.conf.settings_common import *  # noqa: F401, F403
 
+# From this file, not settings_common — see the Databases section there for
+# why the call cannot run while the star-import above is still executing.
+from evennia_database_cascade import configure
+
+DATABASES, DATABASE_ROUTERS = configure(  # noqa: F405
+    DATABASES, INSTALLED_APPS, GAME_DIR, os.environ  # noqa: F405
+)
+
 SERVERNAME = "Router"
 
 SCALING_ROLE = "router"

@@ -23,6 +23,15 @@ sqlean.py; sys_platform == "darwin"
 # that is an install-mode flag, not something a requirement string carries.
 # Naming them there and installing them here is what makes pip treat them as
 # already satisfied rather than going looking on PyPI.
+#
+# **Every sibling in the tree, not just this library's own.** Once these are
+# on PyPI, pip resolves the chain by itself and the indirect ones need no
+# mention. Until then nothing resolves anything, so each one is listed
+# explicitly, deepest first: the logging extension is a dependency of all
+# five below it, and the cascade arrives through the archive and the bus
+# rather than through anything this library imports.
+-e ../../evennia-logging-extension
+-e ../../evennia-database-cascade
 -e ../../evennia-portal-multiplex
 -e ../../evennia-archive
 -e ../../evennia-message-bus
