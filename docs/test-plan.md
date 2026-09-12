@@ -654,6 +654,28 @@ the session. See `SS-24`.
 router, and it is logged as an error — a deployment where a character has no reachable location at all
 is broken, not unlucky.
 
+#### A stored home room uuid that fails validation
+
+`home_room_uuid` is an `AttributeProperty` that validates on write, so a value assigned through it is a
+uuid. Row two reads that value back and assigns it to `current_room_uuid`, which validates again — and
+that second check is the first one the value has faced if it reached the database another way.
+
+**The only way it reaches the database another way is a `.db` write.** `.db` goes through the
+`AttributeHandler` and never reaches the descriptor, so it stores whatever it is given. The archive
+carries such a value between instances faithfully — `restore()` writes attribute rows directly, because
+it is generic and cannot know which attributes have descriptors — but it does not create one. Something
+assigned it through `.db` first.
+
+So the `ValueError` is logged as exactly that: a `.db` assignment to `home_room_uuid` somewhere, to be
+found and changed to a plain assignment. The line names the character and the stored value, because
+those are what locate it. `evennia-scaling`'s own code carries no such write and the linter enforces
+that, so the search is a consumer's typeclass code — which no linter of ours reaches, and where
+documentation only helps somebody who read it. This line is how they find out.
+
+**Then the cascade continues to the default home** rather than refusing. The row did not resolve, which
+is what row three is for, and a player who lands somewhere sensible while the problem is on record is
+better served than one whose arrival breaks.
+
 #### A duplicate uuid is not routed around
 
 `DuplicateRoomUuid` from the finder is left to rise rather than caught and treated as "did not resolve".
@@ -677,6 +699,7 @@ anything about.
 | PL-12 | A superuser's location pair is left alone — nothing resolved, so there is nothing to record | test_pl_12_a_superusers_pair_is_left_alone |
 | PL-13 | A `DEFAULT_HOME` that does not resolve falls back to object `#2` | test_pl_13_a_superuser_falls_back_to_object_two |
 | PL-14 | Neither resolving raises `PlacementFailed` — the instance has no Limbo at all | test_pl_14_a_superuser_with_no_limbo_raises |
+| PL-15 | A stored `home_room_uuid` that fails validation falls through to the default home, and is logged as the `.db` write it can only have come from | test_pl_15_an_invalid_stored_home_room_uuid_falls_through |
 
 ### RM — the room mixin
 

@@ -120,15 +120,35 @@ def place_in_world(character, account=None):
     # move a character to another instance to discover that there.
     home_shard = character.home_shard
     if home_shard in get_shards() and character.home_room_uuid:
-        character.current_shard = home_shard
-        character.current_room_uuid = character.home_room_uuid
-        if home_shard != here:
-            raise RoomOnAnotherShard(home_shard, character)
+        # The stored value is validated here for the first time if it
+        # reached the database without passing the descriptor, which only a
+        # `.db` write does — the archive carries such a value faithfully
+        # but does not create one. Treated as a row that did not resolve,
+        # so the cascade goes on to the default home rather than the
+        # arrival breaking on somebody else's mistake.
+        try:
+            stored_home_room = character.home_room_uuid
+            character.current_shard = home_shard
+            character.current_room_uuid = stored_home_room
+        except ValueError as invalid:
+            scaling_log(
+                f"{character} has a stored home_room_uuid that is not a "
+                f"uuid: {stored_home_room!r}. It cannot have been assigned "
+                f"through the property, which refuses this — so something "
+                f"wrote it through `.db`, which bypasses validation "
+                f"entirely. Find that assignment and make it a plain one: "
+                f"`character.home_room_uuid = ...`. Sending them to the "
+                f"default home. ({invalid})",
+                level="ERROR",
+            )
+        else:
+            if home_shard != here:
+                raise RoomOnAnotherShard(home_shard, character)
 
-        room = find_room_by_uuid(character.home_room_uuid)
-        if room:
-            character.location = room
-            return
+            room = find_room_by_uuid(character.home_room_uuid)
+            if room:
+                character.location = room
+                return
 
     default_shard = get_default_home_shard()
     default_uuid = get_default_home_uuid()

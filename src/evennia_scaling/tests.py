@@ -1759,6 +1759,40 @@ class TestPlacement(TestCase):
 
         self.assertEqual(character.location, default_home)
 
+    def test_pl_15_an_invalid_stored_home_room_uuid_falls_through(self):
+        """PL-15: the second validation is the value's first.
+
+        The fixture writes through `.db` deliberately — it is the only way
+        to produce this state, which is the point the logged line makes.
+        The character still lands at the default home: the row did not
+        resolve, which is what row three is for.
+        """
+        from evennia_scaling.config import HOME_ROOM_UUID_KEY
+        from evennia_scaling.handoff import place_in_world
+
+        default_home = self._room(self.DEFAULT_HOME)
+        character = self._character()
+        character.current_shard = "shard0"
+        character.home_shard = "shard0"
+        # Bypassing the descriptor, as a consumer's stray `.db` write does.
+        # Through the handler with `strattr`, which is the column the
+        # property reads — `.db` alone writes `db_value` and the property
+        # would read nothing back.
+        character.attributes.add(
+            HOME_ROOM_UUID_KEY, "not-a-uuid-at-all", strattr=True
+        )
+
+        clear_logs()
+        place_in_world(character)
+
+        self.assertEqual(character.location, default_home)
+
+        logged = read_back_logs()
+        self.assertIn("[ERROR]", logged)
+        self.assertIn(".db", logged)
+        self.assertIn("home_room_uuid", logged)
+        self.assertIn("not-a-uuid-at-all", logged)
+
     @override_settings(SCALING_DEFAULT_HOME_SHARD="shard1")
     def test_pl_07_a_default_home_on_another_shard_is_forwarded(self):
         """PL-07: one default home in the deployment, on one shard.
