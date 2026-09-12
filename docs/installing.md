@@ -312,14 +312,59 @@ that are not there:
 
 ```bash
 pip install evennia
+pip install -e ../evennia-logging-extension -e ../evennia-database-cascade
 pip install -e ../evennia-portal-multiplex -e ../evennia-archive -e ../evennia-message-bus
 pip install -e .
 ```
 
-Then add them to every instance's `INSTALLED_APPS`.
+Deepest first. `evennia-logging-extension` and `evennia-database-cascade` are not named in this
+library's `pyproject.toml` — nothing in `src/` imports either — but the archive and the bus depend on
+them, so they have to be in the environment. Once these are published, pip resolves that chain itself.
 
-**Not written yet:** the archive and message-bus database aliases and routers, the multiplex Portal and
-Server settings, and which launcher verb starts a shard. All of it works in `examples/` — read the
-settings cascade there in the meantime, and see
-[evennia-portal-multiplex](../../evennia-portal-multiplex/docs/installing.md) for its half. It is
-written up here once the library's shape stops moving.
+Then add them to every instance's `INSTALLED_APPS`, `evennia_database_cascade` included: its
+`cascade_migrate` command is only found through the app registry.
+
+## The archive and message-bus databases
+
+Neither alias is declared by hand. Both libraries ship a `db_spec`, and
+[evennia-database-cascade](../../evennia-database-cascade) derives the `DATABASES` entry, the router
+and the migration list from it:
+
+```python
+from evennia_database_cascade import configure
+
+DATABASES, DATABASE_ROUTERS = configure(DATABASES, INSTALLED_APPS, GAME_DIR, os.environ)
+```
+
+With no `DATABASE_URL_ARCHIVE` or `DATABASE_URL_MESSAGEBUS` set, each lands on
+`<GAME_DIR>/server/<alias>.db3`. Both must be **shared storage** every instance can reach — that is
+what makes an archive key minted on one instance mean something on another. The demo does it with
+symlinks; a real deployment points every instance's `DATABASE_URL_*` at one server.
+
+Migrate with `evennia cascade_migrate`, which covers the game database and both aliases. A bare
+`evennia migrate` covers only the game's.
+
+### Where the call goes
+
+**In each instance's own settings file, after its import of any shared settings module — never inside
+the shared module itself.** A settings cascade makes this load-bearing rather than stylistic.
+
+`configure()` resolves each entry in `INSTALLED_APPS` to a package, and Evennia's own apps include
+`evennia.utils.idmapper`. Resolving it imports `evennia.utils`, which imports Evennia's logger, whose
+class body reads a setting the moment it is imported. That read re-enters Django's settings loading,
+and Django answers by rebuilding the settings from the **top-level** module — the one named by
+`DJANGO_SETTINGS_MODULE`.
+
+If `configure()` runs from a shared module, that top-level module is still mid-import and its namespace
+is empty, so the rebuild produces almost nothing and the boot dies on an `AttributeError` naming a
+setting that is, in fact, set. Called from the top-level file after its imports have returned, the
+namespace is fully populated and the same read succeeds.
+
+Nothing is duplicated by this beyond the call itself: every input it takes is already per-instance.
+`GAME_DIR` differs on each instance — and with it each alias's resolved path — so the same three lines
+are correct everywhere. `examples/` does exactly this in `settings_router.py`, `settings_shard0.py` and
+`settings_shard1.py`.
+
+**Not written yet:** the multiplex Portal and Server settings, and which launcher verb starts a shard.
+Both work in `examples/` — read the settings cascade there in the meantime, and see
+[evennia-portal-multiplex](../../evennia-portal-multiplex/docs/installing.md) for its half.

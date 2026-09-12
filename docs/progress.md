@@ -2,6 +2,25 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-12 — logging through the extension, databases through the cascade
+
+195 tests, linter clean. Proven live on the three demo instances: `scaling.log` takes an INFO line, a
+WARN line, and an ERROR line carrying a traceback, in Evennia's format, one timestamp each.
+
+- **`log.py` binds through `evennia-logging-extension`.** Three lines replacing the hand-rolled shim.
+  `scaling_log` and `scaling.log` keep their names, so no call site, import or `mock.patch` target
+  moved. The extension's signature is the one the shim had.
+- **SC-02 went with the shim.** It asserted the shim's own behaviour — a silent no-op outside an
+  Evennia engine — which was never the library's.
+- **The archive and bus aliases come from the cascade**, in the test settings and the demo alike,
+  derived from the siblings' `db_spec`s rather than declared here. `evennia-database-cascade` is an
+  indirect dependency: nothing in `src/` imports it, and every install carries it.
+- **The ticket table stays in the game database.** The cascade changes nothing about that — a ticket
+  neither outlives a wipe nor is read by a second instance. `TK-05` still pins it.
+- **`configure()` is called from each instance's own settings file**, not the shared one. Called from
+  a shared module it re-enters Django's settings loading and the boot dies on an `AttributeError` for
+  a setting that is set; `docs/installing.md` has the mechanism and the reason it is not duplication.
+
 ## 2026-09-06 — a character arrives where they left off
 
 195 tests. Proven live: a new character appears at the default home, walks to another room, goes out of

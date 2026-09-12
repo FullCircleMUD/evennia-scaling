@@ -101,10 +101,13 @@ Everything else is decided as concrete questions arise, by applying the principl
 - **Sibling libraries are installed editable from their local checkouts.** None are on PyPI, so
   `pyproject.toml` names them and the venv installs them editable:
 
+      pip install -e ../evennia-logging-extension -e ../evennia-database-cascade
       pip install -e ../evennia-portal-multiplex -e ../evennia-archive -e ../evennia-message-bus
 
-  Order matters — siblings first, then `pip install -e .`, or pip goes looking on PyPI and fails. The
-  demo's `examples/requirements.txt` does the same for its own venv.
+  Order matters — deepest first, then `pip install -e .`, or pip goes looking on PyPI and fails. The
+  first line is the indirect set: nothing here imports the cascade, and only `log.py` imports the
+  extension, but the three below depend on them. The demo's `examples/requirements.txt` does the same
+  for its own venv.
 - **Editing design docs.** Update or add design documents whenever an architectural decision is made
   or refined. Capture the *why*, not just the *what*. Index new docs in [docs/INDEX.md](docs/INDEX.md).
 - **Don't put implementation detail in this file or README.** Link out to `docs/` instead. Keep
@@ -190,7 +193,8 @@ No `contrib/` — nothing opt-in exists, and the standards forbid scaffolding on
 
 - Python 3.10+ (pinned via `pyproject.toml`).
 - Runtime dependencies: `evennia`, `evennia-portal-multiplex`, `evennia-archive`,
-  `evennia-message-bus`.
+  `evennia-message-bus`, `evennia-logging-extension`. `evennia-database-cascade` arrives through the
+  archive and the bus — it is not declared here because nothing in `src/` imports it.
 - **Tests use Django's test runner** via `runtests.py`, which bootstraps Django then calls
   `evennia._init()`, as the siblings do. No gamedir required.
 - Two venvs, both gitignored: `venv/` at the repo root for the library's own tests, and
@@ -204,5 +208,11 @@ No `contrib/` — nothing opt-in exists, and the standards forbid scaffolding on
   characters; the reason a character can survive not existing anywhere for a moment.
 - **[../evennia-message-bus/](../evennia-message-bus/)** — a hard dependency. Carries the handoff
   message between instances that share no database.
+- **[../evennia-logging-extension/](../evennia-logging-extension/)** — a hard dependency. `log.py`
+  binds `scaling_log` through its `make_logger`; every line this library writes goes through it.
+- **[../evennia-database-cascade/](../evennia-database-cascade/)** — an indirect dependency. Nothing
+  here imports it, but the archive and the bus declare their aliases through it, so a consumer calls
+  its `configure()` — from each instance's own settings file, per
+  [docs/installing.md](docs/installing.md).
 - **[../evennia-shards/](../evennia-shards/)** — the shared-database approach this one is an
   alternative to.
