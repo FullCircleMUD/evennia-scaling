@@ -617,6 +617,50 @@ class TestConfig(TestCase):
         self.assertIn("SCALING_SHARDS", logged)
         self.assertEqual(logged.count("[ERROR]"), 1)
 
+    @override_settings(
+        INSTALLED_APPS=["evennia_archive", "evennia_scaling"]
+    )
+    def test_cf_26_multiplex_missing_from_installed_apps_is_refused(self):
+        """CF-26: a dependency of ours, not a setting of ours.
+
+        The message says the app is absent rather than implying something
+        here is misconfigured, because nothing here is.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            check_settings()
+
+        message = str(raised.exception)
+        self.assertIn("evennia_portal_multiplex", message)
+        self.assertIn("INSTALLED_APPS", message)
+
+    @override_settings(
+        INSTALLED_APPS=[
+            "evennia_archive",
+            "evennia_scaling",
+            "evennia_portal_multiplex",
+        ]
+    )
+    def test_cf_27_multiplex_listed_after_this_library_is_refused(self):
+        """CF-27: ready() runs in INSTALLED_APPS order.
+
+        This library reads MULTIPLEX_INSTANCE_ID without checking it, which
+        is safe only once multiplex's own refusal has run.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from evennia_scaling.config import check_settings
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            check_settings()
+
+        message = str(raised.exception)
+        self.assertIn("evennia_portal_multiplex", message)
+        self.assertIn("before", message)
+
     def test_cf_24_a_configured_instance_logs_its_startup_line(self):
         """CF-24: the one happy-path line, read back from disk.
 

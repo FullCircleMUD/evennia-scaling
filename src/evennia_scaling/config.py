@@ -186,6 +186,62 @@ def get_role():
     return settings.SCALING_ROLE
 
 
+#: The sibling whose AppConfig has to run before ours, and our own app name.
+#: Compared as package prefixes, because an entry may name an AppConfig class
+#: by dotted path rather than the package alone.
+MULTIPLEX_APP = "evennia_portal_multiplex"
+OUR_APP = "evennia_scaling"
+
+
+def _app_position(installed_apps, package):
+    """Where `package` sits in INSTALLED_APPS, or None if it is not there."""
+    for index, entry in enumerate(installed_apps):
+        if entry == package or entry.startswith(f"{package}."):
+            return index
+    return None
+
+
+def _check_multiplex_is_installed_first(problems):
+    """Refuse when the multiplex app is absent, or listed after this one.
+
+    Not a check of a sibling's configuration — that is the sibling's own to
+    make, and multiplex refuses an instance that has not named itself, in
+    its own words. This checks a dependency of *this* library: that the app
+    is there, and that Django will run its `ready()` first.
+
+    The ordering is load-bearing because this library reads
+    ``MULTIPLEX_INSTANCE_ID`` without checking it — at startup for its own
+    first line, and on every transfer after — which is safe only once
+    multiplex's refusal has run. Listed the other way round, a missing name
+    surfaces as multiplex's error raised from here, saying nothing about
+    where to look.
+    """
+    from django.conf import settings
+
+    installed = list(getattr(settings, "INSTALLED_APPS", []))
+    multiplex_at = _app_position(installed, MULTIPLEX_APP)
+    ours_at = _app_position(installed, OUR_APP)
+
+    if multiplex_at is None:
+        problems.append(
+            f"{MULTIPLEX_APP!r} is not in INSTALLED_APPS. This library moves "
+            f"a session by asking it to, and reads this instance's name from "
+            f"it, so it is a hard dependency rather than an option. Add it."
+        )
+        return
+
+    if ours_at is not None and multiplex_at > ours_at:
+        problems.append(
+            f"{MULTIPLEX_APP!r} is listed after {OUR_APP!r} in "
+            f"INSTALLED_APPS, and has to come before it. Django runs each "
+            f"app's ready() in that order, and this library reads "
+            f"MULTIPLEX_INSTANCE_ID without checking it, because multiplex "
+            f"refuses an instance that has not set one. In this order that "
+            f"read happens first, and a missing name is reported as "
+            f"multiplex's error raised from here."
+        )
+
+
 def log_startup() -> None:
     """Record that this instance started, and what it believes.
 
@@ -446,6 +502,10 @@ def check_settings():
     # configured to work at all? Collected with the rest so a deployment
     # missing a setting and a mixin is told both at once.
     _check_typeclasses(problems)
+
+    # Nor is this — it is where a dependency of ours sits in the app list.
+    # Same reason for collecting it: one restart tells them everything.
+    _check_multiplex_is_installed_first(problems)
 
     if problems:
         # Logged before the raise, and the same text both ways. The

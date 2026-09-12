@@ -50,6 +50,16 @@ INSTALLED_APPS = list(INSTALLED_APPS) + [
 ]
 ```
 
+**`evennia_portal_multiplex` must come before `evennia_scaling`, and the order is load-bearing.**
+Django runs each app's `AppConfig.ready()` in the order this list gives, and multiplex refuses to start
+an instance that has not declared `MULTIPLEX_INSTANCE_ID`. This library reads that name — at startup
+for its own first log line, and on every transfer afterwards — without checking it, because by then
+multiplex has. Listed the other way round, that read happens first and the instance refuses with
+multiplex's message raised from this library, which says nothing about where to look.
+
+Nothing detects the wrong order. Alphabetical ordering gives the right one, which is why it is easy to
+get right and easy to break by hand.
+
 ## 3. Name the instances
 
 Three libraries need to know who an instance is, and they must agree.
@@ -378,7 +388,7 @@ adds, and what each shard adds.
 **Shared, imported by every instance:**
 
 ```python
-INSTALLED_APPS = list(INSTALLED_APPS) + [
+INSTALLED_APPS = list(INSTALLED_APPS) + [          # multiplex before scaling
     "evennia_archive",
     "evennia_database_cascade",
     "evennia_message_bus",
@@ -457,7 +467,9 @@ typeclass missing its mixin. Everything below is outside what it can see.
 
 - **`INSTALLED_APPS`.** A missing `evennia_scaling` means the AppConfig never loads, so nothing
   installs and nothing reports it — Evennia has no way to know the app was meant to be there. A missing
-  `evennia_database_cascade` leaves `cascade_migrate` undefined.
+  `evennia_database_cascade` leaves `cascade_migrate` undefined. Nor is the **order** checked:
+  `evennia_portal_multiplex` listed after this library makes a missing `MULTIPLEX_INSTANCE_ID` refuse
+  the boot from here, with multiplex's message — see step 2.
 - **Anything on another instance.** Instances share no settings and no game database, so nothing here
   can verify that `SCALING_SHARDS` names instances that exist, that their ids are spelled the same way,
   or that `SCALING_ROUTER_ID` names the instance actually running the Portal. A mismatch surfaces as a

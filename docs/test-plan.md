@@ -183,6 +183,25 @@ them across log lines would undo that at the moment the operator is reading.
 A clean boot logs no *refusal*. Recording that the settings were fine on every start of every instance
 would bury the real ones in exactly the file kept for finding them.
 
+**The check covers one thing that is not a setting: that `evennia_portal_multiplex` is installed, and
+listed before this library.** `CF-26` and `CF-27`.
+
+This is not validating a sibling's configuration, which is the sibling's own to do — multiplex refuses
+an instance that has not named itself, and does it in its own words. It is checking a dependency of
+*this* library: that the app exists, and that Django will run its `AppConfig.ready()` first, which is
+the ordering `INSTALLED_APPS` decides.
+
+The ordering is load-bearing because this library reads `MULTIPLEX_INSTANCE_ID` without checking it —
+at startup for its own first line, and on every transfer after. That read is safe only once multiplex's
+own refusal has run. Listed the other way round, a missing name surfaces as multiplex's error raised
+from this library, which tells an operator nothing about where to look.
+
+So the refusal says what is actually wrong: the dependency is absent, or it is in the wrong place in
+the list. Neither message suggests a setting of ours is misconfigured, because none is.
+
+Nothing else detects either state. Alphabetical ordering happens to be correct, which is what makes it
+easy to get right and easy to break by hand.
+
 **One startup line is the exception to keeping the happy path out**, and `CF-24` and `CF-25` pin it.
 Two things earn it:
 
@@ -229,6 +248,8 @@ reading of that, not a duplicate to suppress.
 | CF-23 | An instance that boots cleanly logs no refusal, so the file holds only real ones | test_cf_23_a_clean_boot_logs_no_refusal |
 | CF-24 | A configured instance logs one INFO line at startup naming its role, its instance id and the shard roster it believes in | test_cf_24_a_configured_instance_logs_its_startup_line |
 | CF-25 | An instance that refuses to start logs the refusal and no startup line | test_cf_25_a_refused_instance_logs_no_startup_line |
+| CF-26 | `evennia_portal_multiplex` missing from `INSTALLED_APPS` is refused, naming it as the dependency | test_cf_26_multiplex_missing_from_installed_apps_is_refused |
+| CF-27 | `evennia_portal_multiplex` listed after this library is refused, naming the ordering and why it matters | test_cf_27_multiplex_listed_after_this_library_is_refused |
 
 ### AC — the account mixin
 
