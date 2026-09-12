@@ -92,6 +92,20 @@ The current direction is that this library replaces it — see
 
 Everything else is decided as concrete questions arise, by applying the principles above.
 
+## Divergences from the library standards
+
+Both are sanctioned. The linter reports each on every run — that is the linter working, not a defect.
+
+- **`models_without_spec`.** The ticket table declares no alias, for the reason in *Out of scope*
+  above.
+- **`db_attribute_write`.** One write, `account.db._last_puppet = character` in `handoff.py`. The
+  standard's rule against `.db` protects an `AttributeProperty`'s `at_set()` from being bypassed, and
+  there is no descriptor here to bypass: `_last_puppet` is Evennia's own attribute, plain and
+  unvalidated, written the same way in Evennia's `accounts.py`, `objects.py` and admin site. Plain
+  assignment is not the alternative — with no descriptor it would set an ordinary Python attribute,
+  persist nothing, and leave the read at login returning `None`. The reasoning is repeated at the call
+  site.
+
 ## Working conventions
 
 - **Postgres is the deployment target; SQLite is for local development.** Design for Postgres
@@ -158,7 +172,7 @@ evennia-scaling/
 │   └── evennia_scaling/       # library code (src layout)
 │       ├── __init__.py
 │       ├── apps.py            # AppConfig — the boot checks and the overrides
-│       ├── config.py          # settings, each behind an accessor
+│       ├── config.py          # settings behind accessors, and every constant
 │       ├── mixins.py          # the typeclass mixins a consumer adds
 │       ├── handoff.py         # leaving an instance, and reporting the outcome
 │       ├── commands.py        # the account-command overrides, `ooc` included

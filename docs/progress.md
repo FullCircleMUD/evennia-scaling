@@ -2,6 +2,24 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-12 — the structural standards
+
+197 tests, and the linter down to two findings, both sanctioned and recorded in CLAUDE.md.
+
+- **Evennia's settings read through accessors too.** `DEFAULT_HOME` and `BASE_ACCOUNT_TYPECLASS` were
+  read in `handoff.py`; they now go through `config.py` like everything else. `CF-18` and `CF-19` assert
+  an override is followed, which a module-level constant would fail. Neither takes a default — Evennia
+  declares both, and ours would be a second opinion.
+- **Every constant lives in `config.py`.** All nine, imported from there, so a session about to declare
+  one finds the existing name. `_OUTCOMES` dropped its underscore on crossing a module boundary, and
+  brought `config.py` its one module-scope import, since the dict is keyed by multiplex's constants.
+- **Every Evennia import says why that module needs the engine** — one comment per import, since a
+  shared comment above a pair leaves the second unexplained.
+- **`installing.md` is a numbered seven-step spine** with a *what is not checked for you* section: the
+  cross-instance agreements nothing can verify, the unchecked room typeclass, and the shared databases.
+- **`.db` stays in one place.** `account.db._last_puppet` is Evennia's attribute, unvalidated and
+  written that way by Evennia itself; with no descriptor, plain assignment would persist nothing.
+
 ## 2026-09-12 — logging through the extension, databases through the cascade
 
 195 tests, linter clean. Proven live on the three demo instances: `scaling.log` takes an INFO line, a

@@ -379,6 +379,15 @@ def reconstitute_for_ticket(session, ticket):
     # Evennia says the character does not exist — which it does, just not
     # under the primary key the restored account remembers. This is the
     # only place both objects are in hand.
+    #
+    # **Through `.db`, and that is the accepted exception to the standard's
+    # rule against it.** The rule protects an `AttributeProperty`'s
+    # `at_set()` from being bypassed, and there is no descriptor here to
+    # bypass: `_last_puppet` is Evennia's attribute, plain and unvalidated,
+    # and Evennia writes it this way itself (`accounts.py`, `objects.py`,
+    # its admin site). Assignment is not the alternative — with no
+    # descriptor it would set an ordinary Python attribute, persist
+    # nothing, and leave the read at login returning None.
     account.db._last_puppet = character
     return account
 
