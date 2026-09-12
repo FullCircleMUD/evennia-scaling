@@ -4284,6 +4284,47 @@ class TestArrival(TestCase):
         self.assertEqual(log.call_args.kwargs["level"], "ERROR")
         self.assertIn("report", session.told[0])
 
+    @override_settings(SCALING_ROLE="shard", MULTIPLEX_INSTANCE_ID="shard0")
+    def test_ss_29_the_duplicate_line_names_the_uuid_and_the_dbrefs(self):
+        """SS-29: what the line says, not merely that it was written.
+
+        Two real rooms carrying one uuid, and the line read back from disk
+        — `SS-25` mocks the shim and raises a message it wrote itself, so
+        it cannot show the real exception's content reaching anywhere.
+
+        The identifiers are what makes the report actionable. They survive
+        by interpolating the whole exception, which a later edit shortening
+        the message would lose with nothing failing.
+        """
+        from unittest import mock
+
+        from evennia.utils.create import create_object
+
+        from tests.game_typeclasses import ScalingRoom
+
+        shared = "b7c19e04-3f55-4a2e-9d61-0c8e4a7f2b13"
+        rooms = []
+        for name in ("Forest Path", "Forest Path Too"):
+            room = create_object(ScalingRoom, key=name, home=_a_home())
+            room.scaling_room_uuid = shared
+            rooms.append(room)
+
+        account, character = self._arriving()
+        character.current_shard = "shard0"
+        character.current_room_uuid = shared
+        ticket = self._ticket_for(account, character, to_instance="shard0")
+        session = self._session(ticket["token"])
+
+        clear_logs()
+        with mock.patch("evennia_scaling.sessions.send_session"):
+            session.load_sync_data({})
+
+        logged = read_back_logs()
+        self.assertIn("[ERROR]", logged)
+        self.assertIn(shared, logged)
+        for room in rooms:
+            self.assertIn(f"#{room.id}", logged)
+
     @override_settings(SCALING_ROLE="router")
     def test_ss_21_a_router_brings_the_character_back(self):
         """SS-21: the character was deleted on the shard it left.

@@ -1251,6 +1251,14 @@ the caller's existing bounce is what happens next — so none of them adds a bra
 raises out through `load_sync_data` into AMP, where a player sees nothing at all.
 
 **Two more rise past it, because the session override is the frame that can act on them.**
+**`SS-29` pins what the duplicate line says, where `SS-25` pins that it is written.** The two are not
+the same assertion and the difference is the whole value of the line: an operator told only that some
+uuid is duplicated has to go and find which rooms, and the identifiers are what makes the report
+actionable. They survive today by interpolating the whole exception into the message, which is easy to
+lose to a later edit that shortens it — so the case uses two real rooms carrying one uuid and reads the
+line back from disk, rather than mocking the shim and asserting against a message the test wrote
+itself.
+
 `RoomOnAnotherShard` needs the session moved, and `DuplicateRoomUuid` needs the player told. Neither is
 a `return None`, because the caller's bounce to the router is wrong for the first and incomplete for the
 second. `reconstitute_for_ticket` attaches the account to `RoomOnAnotherShard` as it passes — placement
@@ -1322,6 +1330,7 @@ placement that worked, one that failed everywhere, and one that resolved somewhe
 | SS-23 | A character the archive does not hold leaves the session unadmitted, logged | test_ss_23_an_unarchived_character_is_not_admitted |
 | SS-24 | A character that resolved to another shard is transferred there rather than admitted or sent to the router | test_ss_24_a_character_belonging_elsewhere_is_transferred |
 | SS-25 | A duplicate room uuid tells the player to report it, leaves the session unadmitted, and logs it | test_ss_25_a_duplicate_room_uuid_is_reported_to_the_player |
+| SS-29 | The logged line names the uuid and every colliding dbref, read back from disk against a real duplicate | test_ss_29_the_duplicate_line_names_the_uuid_and_the_dbrefs |
 
 ### TK — tickets
 
