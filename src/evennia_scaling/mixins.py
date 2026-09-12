@@ -4,6 +4,9 @@
 See docs/test-plan.md § SH.
 """
 
+# The descriptor the location pair is built on. A property that validates on
+# write is the engine's own mechanism, and reimplementing it would be a second
+# answer to a solved problem.
 from evennia.typeclasses.attributes import AttributeProperty
 from evennia_archive.mixins import (
     ArchivableAccountMixin,
@@ -11,35 +14,17 @@ from evennia_archive.mixins import (
 )
 
 from .config import (
+    CURRENT_ROOM_UUID_KEY,
+    CURRENT_SHARD_KEY,
+    HOME_ROOM_UUID_KEY,
+    HOME_SHARD_KEY,
+    ROOM_UUID_KEY,
     get_default_home_shard,
     get_shards,
     get_start_location_shard,
     get_start_location_uuid,
 )
 from .log import scaling_log
-
-#: The Attribute key holding the other half of where a character is: which
-#: room, in the world of the shard `current_shard` names. It holds the room's
-#: `scaling_room_uuid`, not a dbref — a dbref names a row in one database and
-#: means nothing in the next, so it survives neither a transfer nor a world
-#: rebuild.
-CURRENT_ROOM_UUID_KEY = "current_room_uuid"
-
-#: The same pair again, for where a character lives rather than where it is.
-#: `character.home` is a dbref and does not survive the archive, so a home
-#: that means anything across instances has to be stored this way.
-HOME_SHARD_KEY = "home_shard"
-HOME_ROOM_UUID_KEY = "home_room_uuid"
-
-#: The Attribute key holding a room's own identity — the value the two keys
-#: above point at. Assigned from the consumer's world source, never minted.
-ROOM_UUID_KEY = "scaling_room_uuid"
-
-#: The Attribute key naming where a character is in the game world.
-#: `AttributeProperty` takes its key from the attribute name, so this and the
-#: property below have to agree.
-CURRENT_SHARD_KEY = "current_shard"
-
 
 class _ShardProperty(AttributeProperty):
     """Refuses anything that is not a shard in this deployment.
@@ -355,6 +340,8 @@ def find_room_by_uuid(room_uuid):
     if not room_uuid:
         return None
 
+    # A uuid names a room in this instance's database, so resolving one is a
+    # query against the engine's object table.
     from evennia.objects.models import ObjectDB
 
     found = list(
@@ -467,6 +454,8 @@ class ScalingAccountMixin(ArchivableAccountMixin):
         **Reaches `find_by_attribute` and `restore`, so wrap the caller in
         `deferToThread`.**
         """
+        # Asking whether this instance already holds the character means
+        # querying the engine's object table by Attribute.
         from evennia.objects.models import ObjectDB
         from evennia_archive.api import restore
         from evennia_archive.mixins import ARCHIVE_ID_KEY, OWNER_ACCOUNT_KEY
@@ -609,6 +598,8 @@ class ScalingAccountMixin(ArchivableAccountMixin):
         `puppeted` tag. The character stands where it was, which is what
         makes linkdead work.
         """
+        # Evennia's, for the shape of what it hands us: `unpuppet_all()`
+        # passes a queryset where every other path passes one session.
         from evennia.utils.utils import make_iter
         from evennia_archive.api import archive
 
@@ -763,6 +754,7 @@ class ScalingAccountMixin(ArchivableAccountMixin):
     @staticmethod
     def _live_character(archive_id):
         """Whether a character carrying this archive id is already here."""
+        # As above: a presence check against the engine's object table.
         from evennia.objects.models import ObjectDB
         from evennia_archive.mixins import ARCHIVE_ID_KEY
 

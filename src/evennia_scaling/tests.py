@@ -494,6 +494,41 @@ class TestConfig(TestCase):
                     self.assertIn("shrad0", message)
                     self.assertIn("shard0", message)
 
+    def test_cf_18_the_default_home_is_read_through_an_accessor(self):
+        """CF-18: Evennia's setting, read the way ours are.
+
+        Overridden and read again rather than simply compared, because a
+        module-level constant would satisfy the first assertion and nothing
+        else — reading at call time is the property being pinned.
+        """
+        from django.conf import settings
+
+        from evennia_scaling.config import get_default_home
+
+        self.assertEqual(get_default_home(), settings.DEFAULT_HOME)
+
+        with override_settings(DEFAULT_HOME="#57"):
+            self.assertEqual(get_default_home(), "#57")
+
+    def test_cf_19_the_account_typeclass_path_is_read_through_an_accessor(self):
+        """CF-19: the dotted path, not the class.
+
+        The arrival path hands it to `class_from_module`, so resolving it
+        here would move the consumer's import error to boot.
+        """
+        from django.conf import settings
+
+        from evennia_scaling.config import get_account_typeclass_path
+
+        self.assertEqual(
+            get_account_typeclass_path(), settings.BASE_ACCOUNT_TYPECLASS
+        )
+
+        with override_settings(BASE_ACCOUNT_TYPECLASS="world.accounts.Theirs"):
+            self.assertEqual(
+                get_account_typeclass_path(), "world.accounts.Theirs"
+            )
+
 
 class TestAccountMixin(TestCase):
     """AC — the account mixin."""
@@ -986,7 +1021,7 @@ class TestCurrentShard(TestCase):
         the object would be dropped on the way in, and the character would
         arrive at its destination not knowing where it is.
         """
-        from evennia_scaling.mixins import CURRENT_SHARD_KEY
+        from evennia_scaling.config import CURRENT_SHARD_KEY
 
         character = self._character()
         character.current_shard = "shard1"
@@ -1029,7 +1064,7 @@ class TestCurrentShard(TestCase):
         Half of a composite key is no use on its own, so this has to come
         through the round trip with `current_shard`.
         """
-        from evennia_scaling.mixins import CURRENT_ROOM_UUID_KEY
+        from evennia_scaling.config import CURRENT_ROOM_UUID_KEY
 
         character = self._character()
         character.current_room_uuid = self.ROOM_UUID
@@ -1092,7 +1127,7 @@ class TestCurrentShard(TestCase):
         Attributes, and its shard half is checked like the other one — the
         same property, declared twice.
         """
-        from evennia_scaling.mixins import (
+        from evennia_scaling.config import (
             HOME_ROOM_UUID_KEY,
             HOME_SHARD_KEY,
         )
@@ -1332,7 +1367,7 @@ class TestRoomUuid(TestCase):
         Not for the archive's sake — rooms are never archived. This is just
         how a typeclass stores anything.
         """
-        from evennia_scaling.mixins import ROOM_UUID_KEY
+        from evennia_scaling.config import ROOM_UUID_KEY
 
         room = self._room()
         room.scaling_room_uuid = self.ROOM_UUID
@@ -2306,7 +2341,7 @@ class TestHandoff(TestCase):
         import json
         from unittest import mock
 
-        from evennia_scaling.sessions import SCALING_TICKET_KEY
+        from evennia_scaling.config import SCALING_TICKET_KEY
 
         account, character = self._playing()
         with mock.patch(
@@ -3503,7 +3538,7 @@ class TestServerSession(TestCase):
     def _payload(self, token):
         from evennia_portal_multiplex.move import PAYLOAD_KEY
 
-        from evennia_scaling.sessions import SCALING_TICKET_KEY
+        from evennia_scaling.config import SCALING_TICKET_KEY
 
         return {PAYLOAD_KEY: json.dumps({SCALING_TICKET_KEY: token})}
 

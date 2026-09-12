@@ -4,42 +4,15 @@
 See docs/test-plan.md § HO.
 """
 
+# Evennia's reactor-aware sleep. The move is deferred a tick so the caller's
+# frame finishes before the session is handed away.
 from evennia.utils.utils import delay
-from evennia_portal_multiplex.move import (
-    ALREADY_THERE,
-    MOVED,
-    NO_SUCH_SESSION,
-    NOT_ATTACHED,
-    REJECTED,
-    STRANDED,
-    send_session,
-)
+from evennia_portal_multiplex.move import send_session
 
+from .config import LIMBO_PK, OUTCOMES, SCALING_TICKET_KEY
 from .log import scaling_log
 from .messages import SessionAuthorized
-from .sessions import SCALING_TICKET_KEY
 from .tickets import create_ticket
-
-#: What each outcome of a move means here: how loudly to record it, and
-#: whether there is anyone to tell.
-#:
-#: Everything that is not `MOVED` is logged — each one means a player did not
-#: arrive somewhere, and the reason is worth a record.
-#:
-#: The player is told only where a message can reach them and means
-#: something. A stranded session has no instance to deliver to and a session
-#: the Portal has dropped has nobody behind it, so telling them is a message
-#: into nothing rather than a kindness that fails quietly. `ALREADY_THERE` is
-#: not a failure and needs no game text — the library would be inventing
-#: wording only its caller can interpret.
-_OUTCOMES = {
-    MOVED: (None, None),
-    NOT_ATTACHED: ("ERROR", "That instance is not available right now."),
-    REJECTED: ("ERROR", "That instance would not take you right now."),
-    STRANDED: ("ERROR", None),
-    NO_SUCH_SESSION: ("WARNING", None),
-    ALREADY_THERE: ("WARNING", None),
-}
 
 
 class PlacementFailed(Exception):
@@ -177,11 +150,6 @@ def place_in_world(character, account=None):
     )
 
 
-#: Evennia's initial setup makes Limbo, and makes it second — so on any
-#: instance it set up, this is Limbo whatever the game has renamed it to.
-LIMBO_PK = 2
-
-
 def _place_superuser(character):
     """Put a superuser in Limbo, whatever their location pair says.
 
@@ -207,11 +175,18 @@ def _place_superuser(character):
     nothing to record; it keeps what it held and restamps on their first
     move like anyone's.
     """
-    from django.conf import settings
+    # Object #2 is looked up directly in the engine's object table.
     from evennia.objects.models import ObjectDB
+
+    # `DEFAULT_HOME` is a dbref or a name, so resolving it is the engine's
+    # search rather than a query we could write.
     from evennia.utils.search import search_object
 
-    found = search_object(settings.DEFAULT_HOME)
+    from .config import get_default_home
+
+    default_home = get_default_home()
+
+    found = search_object(default_home)
     if found:
         character.location = found[0]
         return
@@ -223,7 +198,7 @@ def _place_superuser(character):
 
     raise PlacementFailed(
         f"{character} is a superuser and this instance has no Limbo: "
-        f"DEFAULT_HOME is {settings.DEFAULT_HOME!r}, which does not resolve, "
+        f"DEFAULT_HOME is {default_home!r}, which does not resolve, "
         f"and there is no object #{LIMBO_PK} either."
     )
 
@@ -261,16 +236,17 @@ def account_for_ticket(ticket):
     Raises `NotArchived` when the archive does not hold it. The caller
     turns that into a session it does not admit.
     """
-    from django.conf import settings
+    # The consumer's account typeclass is configured as a dotted path, and
+    # rebuilding one means having the class.
     from evennia.utils.utils import class_from_module
     from evennia_archive.api import restore
 
-    from .config import ROLE_SHARD, get_role
+    from .config import ROLE_SHARD, get_account_typeclass_path, get_role
 
     archive_id = ticket["account_archive_id"]
 
     if get_role() == ROLE_SHARD:
-        account_class = class_from_module(settings.BASE_ACCOUNT_TYPECLASS)
+        account_class = class_from_module(get_account_typeclass_path())
         return account_class.rebuild_from_archive(archive_id)
 
     if not _live_account(archive_id):
@@ -290,6 +266,8 @@ def _live_account(archive_id):
     apart for the log — `restore` does the same lookup itself and will not
     say which branch it took.
     """
+    # Asking whether this instance already holds the account is a query
+    # against the engine's own account table.
     from evennia.accounts.models import AccountDB
     from evennia_archive.mixins import ARCHIVE_ID_KEY
 
@@ -417,7 +395,7 @@ def report_outcome(moving, account, to_instance):
 
     def report(result):
         _, outcome = result
-        level, message = _OUTCOMES.get(
+        level, message = OUTCOMES.get(
             outcome, ("ERROR", "Something went wrong moving you.")
         )
         if level:

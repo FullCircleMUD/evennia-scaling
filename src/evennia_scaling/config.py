@@ -1,9 +1,22 @@
 # SPDX-License-Identifier: BSD-3-Clause
-"""Settings this library reads, each behind an accessor.
+"""Settings this library reads, each behind an accessor, and its constants.
 
 Settings are read here and nowhere else, so a default lives in one place and
 a consumer overriding one changes every reader at once.
+
+Every module-level constant the library declares lives here too, and every
+other module imports it from here. The reason is discovery: one file to check
+before minting a second name for a value that already has one.
 """
+
+from evennia_portal_multiplex.move import (
+    ALREADY_THERE,
+    MOVED,
+    NO_SUCH_SESSION,
+    NOT_ATTACHED,
+    REJECTED,
+    STRANDED,
+)
 
 SETTING_TICKET_LIFETIME = "SCALING_TICKET_LIFETIME_SECONDS"
 
@@ -173,6 +186,32 @@ def get_role():
     return settings.SCALING_ROLE
 
 
+def get_default_home() -> str:
+    """Return Evennia's `DEFAULT_HOME`, the room a character falls back to.
+
+    Evennia's setting, not one of ours, and read here for the same reason
+    ours are: one place a consumer's override takes effect. Not checked at
+    boot and given no default — Evennia declares it in `settings_default`,
+    so a default here would be a second opinion about a value it owns.
+    """
+    from django.conf import settings
+
+    return settings.DEFAULT_HOME
+
+
+def get_account_typeclass_path() -> str:
+    """Return the dotted path in Evennia's `BASE_ACCOUNT_TYPECLASS`.
+
+    The path, not the class. The arrival path hands it to
+    `class_from_module`, and resolving it here would move a consumer's
+    import error to boot — where `_check_typeclasses` already reports it,
+    with the setting named.
+    """
+    from django.conf import settings
+
+    return settings.BASE_ACCOUNT_TYPECLASS
+
+
 SETTING_ACCOUNT_TYPECLASS = "BASE_ACCOUNT_TYPECLASS"
 SETTING_CHARACTER_TYPECLASS = "BASE_CHARACTER_TYPECLASS"
 
@@ -199,6 +238,8 @@ def _check_typeclass(setting, ours, theirs, problems):
     account carries nothing worth moving between instances.
     """
     from django.conf import settings
+    # The consumer names their typeclass as a dotted path, and checking it
+    # carries our mixin means resolving it to the class.
     from evennia.utils.utils import class_from_module
 
     path = getattr(settings, setting, None)
@@ -382,3 +423,72 @@ def check_settings():
 
     if problems:
         raise ImproperlyConfigured(" ".join(problems))
+
+
+######################################################################
+# Constants
+######################################################################
+
+#: The Attribute key naming where a character is in the game world.
+#: `AttributeProperty` takes its key from the attribute name, so this and the
+#: property in `mixins.py` have to agree.
+CURRENT_SHARD_KEY = "current_shard"
+
+#: The Attribute key holding the other half of where a character is: which
+#: room, in the world of the shard `current_shard` names. It holds the room's
+#: `scaling_room_uuid`, not a dbref — a dbref names a row in one database and
+#: means nothing in the next, so it survives neither a transfer nor a world
+#: rebuild.
+CURRENT_ROOM_UUID_KEY = "current_room_uuid"
+
+#: The same pair again, for where a character lives rather than where it is.
+#: `character.home` is a dbref and does not survive the archive, so a home
+#: that means anything across instances has to be stored this way.
+HOME_SHARD_KEY = "home_shard"
+HOME_ROOM_UUID_KEY = "home_room_uuid"
+
+#: The Attribute key holding a room's own identity — the value the two keys
+#: above point at. Assigned from the consumer's world source, never minted.
+ROOM_UUID_KEY = "scaling_room_uuid"
+
+#: The key this library's token travels under, inside multiplex's payload.
+#: That payload is a dict a consumer may put their own keys in, so ours is
+#: named for the library rather than for what it holds.
+SCALING_TICKET_KEY = "scaling_ticket"
+
+#: The switches that write to the account: the subscription itself, and
+#: channel aliases, which are stored as nicks. Everything else is left
+#: alone — `mute`/`unmute` write to the channel rather than the account,
+#: the channel-management switches are already staff-locked, and
+#: `list`/`all`/`history`/`who` only read.
+ACCOUNT_SWITCHES = frozenset({"sub", "unsub", "alias", "unalias"})
+
+#: Evennia's initial setup makes Limbo, and makes it second — so on any
+#: instance it set up, this is Limbo whatever the game has renamed it to.
+LIMBO_PK = 2
+
+
+#: What each outcome of a move means here: how loudly to record it, and
+#: whether there is anyone to tell.
+#:
+#: Everything that is not `MOVED` is logged — each one means a player did not
+#: arrive somewhere, and the reason is worth a record.
+#:
+#: The player is told only where a message can reach them and means
+#: something. A stranded session has no instance to deliver to and a session
+#: the Portal has dropped has nobody behind it, so telling them is a message
+#: into nothing rather than a kindness that fails quietly. `ALREADY_THERE` is
+#: not a failure and needs no game text — the library would be inventing
+#: wording only its caller can interpret.
+#:
+#: The multiplex import is at module scope because the keys are its
+#: constants, and a dict cannot be built without them. It is the one import
+#: this module has: everything else it reads is behind a function.
+OUTCOMES = {
+    MOVED: (None, None),
+    NOT_ATTACHED: ("ERROR", "That instance is not available right now."),
+    REJECTED: ("ERROR", "That instance would not take you right now."),
+    STRANDED: ("ERROR", None),
+    NO_SUCH_SESSION: ("WARNING", None),
+    ALREADY_THERE: ("WARNING", None),
+}

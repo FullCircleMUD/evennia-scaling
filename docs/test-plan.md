@@ -154,6 +154,16 @@ does not punish a player for losing their connection somewhere the game cannot r
 It is also the default a consumer can most easily reverse. Clearing after `super().at_post_move()` is a
 line; restoring a value the library has already cleared means reading it first.
 
+**Evennia's own settings are read through an accessor here too.** `DEFAULT_HOME` and
+`BASE_ACCOUNT_TYPECLASS` belong to Evennia rather than this library, which changes nothing about where
+they are read: one named function per setting, in `config.py`, so every reader of a value moves
+together and a consumer overriding one has a single place to look. `CF-18` and `CF-19` pin the two the
+placement and arrival paths need.
+
+Neither is checked at boot, and neither gets a default. Evennia declares both in its own
+`settings_default`, so an instance that reaches this library at all has them — a default of ours would
+be a second opinion about a value Evennia already owns.
+
 | ID | Case | Test function |
 |---|---|---|
 | CF-01 | The ticket lifetime defaults to ten seconds when the setting is absent | test_cf_01_the_ticket_lifetime_defaults_to_ten_seconds |
@@ -173,6 +183,8 @@ line; restoring a value the library has already cleared means reading it first.
 | CF-15 | A `SCALING_DEFAULT_HOME_UUID` that does not parse as a uuid is refused, naming the value | test_cf_15_a_default_home_uuid_that_is_not_a_uuid_is_refused |
 | CF-16 | An unset `SCALING_START_LOCATION_UUID` is refused, naming the setting | test_cf_16_an_unset_start_location_uuid_is_refused |
 | CF-17 | A `SCALING_START_LOCATION_UUID` that does not parse as a uuid is refused, naming the value | test_cf_17_a_start_location_uuid_that_is_not_a_uuid_is_refused |
+| CF-18 | `get_default_home()` returns Evennia's `DEFAULT_HOME`, and follows a consumer who overrides it | test_cf_18_the_default_home_is_read_through_an_accessor |
+| CF-19 | `get_account_typeclass_path()` returns Evennia's `BASE_ACCOUNT_TYPECLASS`, and follows a consumer who overrides it | test_cf_19_the_account_typeclass_path_is_read_through_an_accessor |
 
 ### AC — the account mixin
 

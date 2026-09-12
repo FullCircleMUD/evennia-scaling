@@ -13,14 +13,14 @@ import json
 from evennia_message_bus import process_inbox
 from evennia_portal_multiplex.move import PAYLOAD_KEY, send_session
 
-from .config import ROLE_SHARD, get_role, get_router_id
+from .config import (
+    ROLE_SHARD,
+    SCALING_TICKET_KEY,
+    get_role,
+    get_router_id,
+)
 from .log import scaling_log
 from .tickets import redeem_ticket
-
-#: The key this library's token travels under, inside multiplex's payload.
-#: That payload is a dict a consumer may put their own keys in, so ours is
-#: named for the library rather than for what it holds.
-SCALING_TICKET_KEY = "scaling_ticket"
 
 #: Set by `AppConfig.ready()` to the generated class, so the dotted path in
 #: SERVER_SESSION_CLASS resolves. Evennia looks the setting up by string.

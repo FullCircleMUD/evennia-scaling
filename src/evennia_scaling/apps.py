@@ -49,6 +49,8 @@ class EvenniaScalingConfig(AppConfig):
         already listed is left alone rather than added again.
         """
         from django.conf import settings
+        # Evennia's, for the setting's own shape: the default is a bare
+        # string and a game may have made it a list.
         from evennia.utils.utils import make_iter
 
         ours = "evennia_scaling.at_server_startstop"
@@ -68,7 +70,10 @@ class EvenniaScalingConfig(AppConfig):
         `AccountCmdSet.at_cmdset_creation` reads when a session is built —
         long after startup.
         """
+        # The command classes being replaced. Overriding Evennia's default
+        # commands means holding the modules that define them.
         from evennia.commands.default import account as account_commands
+
         from . import commands
 
         account_commands.CmdOOC = commands.ScalingCmdOOC
@@ -88,6 +93,8 @@ class EvenniaScalingConfig(AppConfig):
         # `nick` is a rewritten branch rather than a lock, and it lives in
         # a different module of Evennia's — but the install is the same
         # assignment, and `general` imports nothing populated late.
+        # As above, for the one command of ours that lives in Evennia's
+        # `general` rather than its `account`.
         from evennia.commands.default import general as general_commands
 
         general_commands.CmdNick = commands.ScalingCmdNick
@@ -106,6 +113,9 @@ class EvenniaScalingConfig(AppConfig):
         already names ours returns rather than layering a second time.
         """
         from django.conf import settings
+        # Evennia resolves SERVER_SESSION_CLASS by dotted path, so the class
+        # the consumer configured has to be imported before ours can subclass
+        # it.
         from evennia.utils.utils import class_from_module
 
         from . import sessions

@@ -12,14 +12,11 @@ one lives apart from `commands.py`, which `ready()` does import.
 See docs/test-plan.md § LK.
 """
 
+# The command being subclassed. Safe at module scope here — see the module
+# docstring for why this module exists apart from `commands.py`.
 from evennia.commands.default.comms import CmdChannel
 
-#: The switches that write to the account: the subscription itself, and
-#: channel aliases, which are stored as nicks. Everything else is left
-#: alone — `mute`/`unmute` write to the channel rather than the account,
-#: the channel-management switches are already staff-locked, and
-#: `list`/`all`/`history`/`who` only read.
-ACCOUNT_SWITCHES = frozenset({"sub", "unsub", "alias", "unalias"})
+from .config import ACCOUNT_SWITCHES
 
 
 class ScalingCmdChannel(CmdChannel):

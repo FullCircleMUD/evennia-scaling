@@ -9,6 +9,9 @@ destructive there would fire on a dropped connection.
 See docs/test-plan.md § OC.
 """
 
+# The eight account commands this module subclasses. Overriding a default
+# command means inheriting from it, so the engine's own classes are the
+# base — there is no lighter coupling available.
 from evennia.commands.default.account import (
     CmdCharCreate,
     CmdCharDelete,
@@ -19,6 +22,7 @@ from evennia.commands.default.account import (
     CmdQuell,
     CmdStyle,
 )
+# The ninth, which Evennia keeps in `general` rather than `account`.
 from evennia.commands.default.general import CmdNick
 
 from .config import ROLE_SHARD, get_role, get_router_id

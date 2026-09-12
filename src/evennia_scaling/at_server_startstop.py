@@ -24,6 +24,9 @@ def at_server_init():
     The swap itself is the same one the account commands get: Evennia's
     cmdsets read the module attribute when a session's cmdset is built.
     """
+    # The module whose `CmdChannel` attribute is being replaced. Imported
+    # here rather than at module scope because `comms` pulls in `evmenu`,
+    # which needs `evennia._init()` to have run.
     from evennia.commands.default import comms
 
     from .channel_command import ScalingCmdChannel

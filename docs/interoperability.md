@@ -2,9 +2,10 @@
 
 This library against every sibling library in `libraries/`.
 
-Each section names the relationship — **hard dependency**, **optional integration**, or **no
-coupling** — followed either by the constraints that apply or by an explicit clearance stating *why* it
-is clear in terms of what this library does. "No known issues" is not a clearance.
+Each section names the relationship — **hard dependency**, **optional integration**, **indirect
+dependency**, or **no coupling** — followed either by the constraints that apply or by an explicit
+clearance stating *why* it is clear in terms of what this library does. "No known issues" is not a
+clearance.
 
 ## evennia-ai-memory
 
@@ -25,6 +26,12 @@ nothing has to be duplicated into an Attribute to make it findable.
 The archive must be **shared storage**, reachable by every instance — a database all of them can see.
 This is the one thing instances do share, and the whole approach rests on it: without it the archive
 key minted on one instance names nothing on another.
+
+## evennia-calendar
+
+**No coupling.** Neither library imports the other. Calendar derives every value from the clock and
+persists nothing, so a character carries no calendar state between instances and each one answers
+identically without being told — which is the statement from its side too.
 
 ## evennia-database-cascade
 
@@ -118,10 +125,11 @@ This library.
 
 ## evennia-shards
 
-**Not co-installed.** Shards partitions one shared Postgres by `shard_id`, so every instance sees every
-row and a character moves by changing a column. This library's instances share no game database at all.
-The two are alternative answers to the same question, and installing both would mean two mechanisms
-disagreeing about where a character is.
+**No coupling**, and not co-installed either. Neither library imports the other, and nothing would work
+if they were both installed: shards partitions one shared Postgres by `shard_id`, so every instance sees
+every row and a character moves by changing a column, where this library's instances share no game
+database at all. The two are alternative answers to the same question, and running both would mean two
+mechanisms disagreeing about where a character is.
 
 **The current direction is that this library replaces it.** Once scaling works, shards has no job — its
 reason for existing is running one world across several processes, and this answers that without a

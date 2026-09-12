@@ -18,7 +18,38 @@ The player's connection never moves between instances —
 [evennia-portal-multiplex](../../evennia-portal-multiplex) hands the session from one Server to another
 behind a single Portal. That Portal belongs to the router.
 
-## Naming instances
+## 1. Install the libraries
+
+None are on PyPI. Install the siblings editable first, then this library, or pip goes looking for names
+that are not there:
+
+```bash
+pip install evennia
+pip install -e ../evennia-logging-extension -e ../evennia-database-cascade
+pip install -e ../evennia-portal-multiplex -e ../evennia-archive -e ../evennia-message-bus
+pip install -e .
+```
+
+Deepest first. `evennia-logging-extension` and `evennia-database-cascade` are not named in this
+library's `pyproject.toml` — nothing in `src/` imports either — but the archive and the bus depend on
+them, so they have to be in the environment. Once these are published, pip resolves that chain itself.
+
+## 2. Add the apps
+
+Every instance's `INSTALLED_APPS`, `evennia_database_cascade` included — its `cascade_migrate` command
+is only found through the app registry:
+
+```python
+INSTALLED_APPS = list(INSTALLED_APPS) + [
+    "evennia_archive",
+    "evennia_database_cascade",
+    "evennia_message_bus",
+    "evennia_portal_multiplex",
+    "evennia_scaling",
+]
+```
+
+## 3. Name the instances
 
 Three libraries need to know who an instance is, and they must agree.
 
@@ -85,7 +116,7 @@ attached right now is multiplex's registry, and is a different question this set
 
 The router is not a shard and is not listed; it is named by `SCALING_ROUTER_ID`.
 
-## Typeclasses
+## 4. Mix in the typeclasses
 
 **The account and character typeclasses must carry this library's mixins**, or the instance refuses to
 start:
@@ -96,10 +127,8 @@ from evennia.objects.objects import DefaultCharacter
 
 from evennia_scaling.mixins import ScalingAccountMixin, ScalingCharacterMixin
 
-
 class Account(ScalingAccountMixin, DefaultAccount):
     pass
-
 
 class Character(ScalingCharacterMixin, DefaultCharacter):
     pass
@@ -132,7 +161,6 @@ from evennia.objects.objects import DefaultRoom
 
 from evennia_scaling.mixins import ScalingRoomMixin
 
-
 class Room(ScalingRoomMixin, DefaultRoom):
     pass
 ```
@@ -160,7 +188,7 @@ The check reads the two configured typeclasses only. A game that creates charact
 typeclass gets no warning: it is a boot-time smoke test, not a guarantee. `BASE_GUEST_TYPECLASS` is
 deliberately not checked — a guest account carries nothing worth moving between instances.
 
-## Where the world's anchor rooms are
+## 5. Declare the world anchor rooms
 
 Evennia's `START_LOCATION` and `DEFAULT_HOME` name two rooms by primary key. Across several instances
 a primary key names nothing: every instance has its own database, so room #5 exists on every shard and
@@ -204,7 +232,52 @@ nothing about that failure looks like a misconfiguration.
 character created any way at all is somewhere real without the game having to hook chargen. A game that
 offers a choice of starting towns assigns the pair during chargen instead.
 
-## Auto-puppet, per role
+## 6. Wire the archive and message-bus databases
+
+Neither alias is declared by hand. Both libraries ship a `db_spec`, and
+[evennia-database-cascade](../../evennia-database-cascade) derives the `DATABASES` entry, the router
+and the migration list from it:
+
+```python
+from evennia_database_cascade import configure
+
+DATABASES, DATABASE_ROUTERS = configure(DATABASES, INSTALLED_APPS, GAME_DIR, os.environ)
+```
+
+With no `DATABASE_URL_ARCHIVE` or `DATABASE_URL_MESSAGEBUS` set, each lands on
+`<GAME_DIR>/server/<alias>.db3`. Both must be **shared storage** every instance can reach — that is
+what makes an archive key minted on one instance mean something on another. The demo does it with
+symlinks; a real deployment points every instance's `DATABASE_URL_*` at one server.
+
+Migrate with `evennia cascade_migrate`, which covers the game database and both aliases. A bare
+`evennia migrate` covers only the game's.
+
+### Where the configure() call goes
+
+**In each instance's own settings file, after its import of any shared settings module — never inside
+the shared module itself.** A settings cascade makes this load-bearing rather than stylistic.
+
+`configure()` resolves each entry in `INSTALLED_APPS` to a package, and Evennia's own apps include
+`evennia.utils.idmapper`. Resolving it imports `evennia.utils`, which imports Evennia's logger, whose
+class body reads a setting the moment it is imported. That read re-enters Django's settings loading,
+and Django answers by rebuilding the settings from the **top-level** module — the one named by
+`DJANGO_SETTINGS_MODULE`.
+
+If `configure()` runs from a shared module, that top-level module is still mid-import and its namespace
+is empty, so the rebuild produces almost nothing and the boot dies on an `AttributeError` naming a
+setting that is, in fact, set. Called from the top-level file after its imports have returned, the
+namespace is fully populated and the same read succeeds.
+
+Nothing is duplicated by this beyond the call itself: every input it takes is already per-instance.
+`GAME_DIR` differs on each instance — and with it each alias's resolved path — so the same three lines
+are correct everywhere. `examples/` does exactly this in `settings_router.py`, `settings_shard0.py` and
+`settings_shard1.py`.
+
+**Not written yet:** the multiplex Portal and Server settings, and which launcher verb starts a shard.
+Both work in `examples/` — read the settings cascade there in the meantime, and see
+[evennia-portal-multiplex](../../evennia-portal-multiplex/docs/installing.md) for its half.
+
+## 7. Set auto-puppet per role
 
 Evennia's `AUTO_PUPPET_ON_LOGIN` puppets a character as soon as an account logs in. The two roles need
 opposite answers, and neither is Evennia's default behaviour for this deployment:
@@ -229,6 +302,28 @@ into actually playing.
 The library does not set either. They are Evennia's settings and a consumer's to own, and a game may
 have its own reason for a different arrangement — but this is the one that matches how the transfer
 works.
+
+## What is not checked for you
+
+`check_settings()` runs at boot and refuses an instance that cannot work — an unset role, a shard
+roster that is empty or a bare string, a world anchor naming a shard that is not in the roster, a
+typeclass missing its mixin. Everything below is outside what it can see.
+
+- **`INSTALLED_APPS`.** A missing `evennia_scaling` means the AppConfig never loads, so nothing
+  installs and nothing reports it — Evennia has no way to know the app was meant to be there. A missing
+  `evennia_database_cascade` leaves `cascade_migrate` undefined.
+- **Anything on another instance.** Instances share no settings and no game database, so nothing here
+  can verify that `SCALING_SHARDS` names instances that exist, that their ids are spelled the same way,
+  or that `SCALING_ROUTER_ID` names the instance actually running the Portal. A mismatch surfaces as a
+  session arriving where nobody intended.
+- **The room typeclass.** `BASE_ROOM_TYPECLASS` is not checked. A room without `ScalingRoomMixin`
+  carries no uuid, and a character who leaves from one cannot be returned to it — silently, with every
+  character appearing at `DEFAULT_HOME` instead. See step 4.
+- **Whether a world anchor names a room that exists.** Each anchor room lives on one shard, and every
+  other instance boots without it, so the question can only be asked where the answer means something.
+- **That the shared databases are shared.** The archive and the bus must be reachable by every
+  instance. An instance pointed at its own private copy starts cleanly and fails as a character who
+  arrives nowhere.
 
 ## Settings this library reads
 
@@ -304,67 +399,3 @@ classmethods on its account typeclass:
 local account up by username, is handed something that is not one, matches nothing, and lets the
 restore proceed. This instance's `#1` rebuilt from the archive takes an operator's way in with it, and
 nothing about the failure looks like a failure.
-
-## Installing the libraries
-
-None are on PyPI. Install the siblings editable first, then this library, or pip goes looking for names
-that are not there:
-
-```bash
-pip install evennia
-pip install -e ../evennia-logging-extension -e ../evennia-database-cascade
-pip install -e ../evennia-portal-multiplex -e ../evennia-archive -e ../evennia-message-bus
-pip install -e .
-```
-
-Deepest first. `evennia-logging-extension` and `evennia-database-cascade` are not named in this
-library's `pyproject.toml` — nothing in `src/` imports either — but the archive and the bus depend on
-them, so they have to be in the environment. Once these are published, pip resolves that chain itself.
-
-Then add them to every instance's `INSTALLED_APPS`, `evennia_database_cascade` included: its
-`cascade_migrate` command is only found through the app registry.
-
-## The archive and message-bus databases
-
-Neither alias is declared by hand. Both libraries ship a `db_spec`, and
-[evennia-database-cascade](../../evennia-database-cascade) derives the `DATABASES` entry, the router
-and the migration list from it:
-
-```python
-from evennia_database_cascade import configure
-
-DATABASES, DATABASE_ROUTERS = configure(DATABASES, INSTALLED_APPS, GAME_DIR, os.environ)
-```
-
-With no `DATABASE_URL_ARCHIVE` or `DATABASE_URL_MESSAGEBUS` set, each lands on
-`<GAME_DIR>/server/<alias>.db3`. Both must be **shared storage** every instance can reach — that is
-what makes an archive key minted on one instance mean something on another. The demo does it with
-symlinks; a real deployment points every instance's `DATABASE_URL_*` at one server.
-
-Migrate with `evennia cascade_migrate`, which covers the game database and both aliases. A bare
-`evennia migrate` covers only the game's.
-
-### Where the call goes
-
-**In each instance's own settings file, after its import of any shared settings module — never inside
-the shared module itself.** A settings cascade makes this load-bearing rather than stylistic.
-
-`configure()` resolves each entry in `INSTALLED_APPS` to a package, and Evennia's own apps include
-`evennia.utils.idmapper`. Resolving it imports `evennia.utils`, which imports Evennia's logger, whose
-class body reads a setting the moment it is imported. That read re-enters Django's settings loading,
-and Django answers by rebuilding the settings from the **top-level** module — the one named by
-`DJANGO_SETTINGS_MODULE`.
-
-If `configure()` runs from a shared module, that top-level module is still mid-import and its namespace
-is empty, so the rebuild produces almost nothing and the boot dies on an `AttributeError` naming a
-setting that is, in fact, set. Called from the top-level file after its imports have returned, the
-namespace is fully populated and the same read succeeds.
-
-Nothing is duplicated by this beyond the call itself: every input it takes is already per-instance.
-`GAME_DIR` differs on each instance — and with it each alias's resolved path — so the same three lines
-are correct everywhere. `examples/` does exactly this in `settings_router.py`, `settings_shard0.py` and
-`settings_shard1.py`.
-
-**Not written yet:** the multiplex Portal and Server settings, and which launcher verb starts a shard.
-Both work in `examples/` — read the settings cascade there in the meantime, and see
-[evennia-portal-multiplex](../../evennia-portal-multiplex/docs/installing.md) for its half.
