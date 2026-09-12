@@ -148,6 +148,7 @@ evennia-scaling/
 │   ├── commands.md            # the commands changed, and the rule behind them
 │   ├── installing.md          # what a consumer configures
 │   ├── where-state-changes.md # account on the router, character on the shard
+│   ├── transfer-step-by-step.md # every step of a transfer, and which library owns each
 │   ├── interoperability.md
 │   └── archive/               # historical context, not authoritative
 ├── src/
@@ -165,7 +166,7 @@ evennia-scaling/
 │       ├── tickets.py         # minting, storing, sweeping and redeeming
 │       ├── messages.py        # the handoff message, over the bus
 │       ├── sessions.py        # the Server session override
-│       ├── log.py             # shim onto Evennia's logger → scaling.log
+│       ├── log.py             # binds scaling_log via evennia-logging-extension → scaling.log
 │       └── tests.py           # unit tests, run via runtests.py
 ├── tests/                     # standalone test infrastructure
 │   ├── __init__.py
@@ -179,8 +180,9 @@ evennia-scaling/
 └── examples/                  # router + two shards, one source tree
 ```
 
-`examples/` holds three gamedirs — `router`, `shard0`, `shard1` — with all four settings files in
-`router/server/conf/` cascading through `settings_common.py`.
+`examples/` holds three gamedirs — `router`, `shard0`, `shard1` — cascading through
+`settings_common.py`. The settings files are hard-linked across the three `server/conf/` directories:
+one file each, appearing in all three, so an edit in any gamedir is an edit in all of them.
 
 No `contrib/` — nothing opt-in exists, and the standards forbid scaffolding one empty.
 

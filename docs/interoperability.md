@@ -26,6 +26,15 @@ The archive must be **shared storage**, reachable by every instance — a databa
 This is the one thing instances do share, and the whole approach rests on it: without it the archive
 key minted on one instance names nothing on another.
 
+## evennia-database-cascade
+
+**Indirect dependency.** Nothing in `src/` imports it, and the ticket table
+deliberately declares no alias: it lives in the consumer's game database, scoped to one instance and
+worthless after a wipe (`TK-05`, and the argument in `models.py`). A consumer still runs the cascade,
+because both of this library's storage dependencies declare their aliases through it — archive and bus
+databases arrive via its `configure()` call in the consumer's settings, which is how the test suite
+and the demo gamedirs wire theirs.
+
 ## evennia-equipment
 
 **No coupling, and one constraint that decides how a game recovers a character.**
@@ -54,6 +63,12 @@ character's equipment and not its contents — which is the same statement as ab
 
 **No coupling.** It calls a model on behalf of whatever asks. This library moves characters and accounts
 between instances and holds nothing a request would carry.
+
+## evennia-logging-extension
+
+**Hard dependency.** `log.py` binds `scaling_log` through its `make_logger`, and every line this
+library emits goes through that binding to `scaling.log`. The library does not run without it —
+`pyproject.toml` declares it. Nothing flows the other way: the extension knows nothing about scaling.
 
 ## evennia-message-bus
 

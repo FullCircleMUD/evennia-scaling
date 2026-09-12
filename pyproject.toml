@@ -18,6 +18,7 @@ dependencies = [
     "evennia-portal-multiplex",
     "evennia-archive",
     "evennia-message-bus",
+    "evennia-logging-extension",
 ]
 
 [tool.setuptools.packages.find]

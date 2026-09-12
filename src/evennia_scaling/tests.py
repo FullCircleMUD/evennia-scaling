@@ -52,19 +52,6 @@ class TestScaffold(unittest.TestCase):
         """
         self.assertEqual(evennia_scaling.__version__, "0.0.1")
 
-    def test_sc_02_the_log_shim_is_a_no_op_outside_evennia(self):
-        """SC-02: a log call must never raise into its caller.
-
-        The shim swallows the ImportError when Evennia is not bootstrapped,
-        and deliberately does not fall back to stderr or a local file — a
-        library that logs somewhere unexpected is worse than one that stays
-        quiet.
-        """
-        from evennia_scaling.log import scaling_log
-
-        self.assertIsNone(scaling_log("scaffold check"))
-        self.assertIsNone(scaling_log("scaffold check", level="NONSENSE"))
-
 
 class TestTickets(TestCase):
     """TK — tickets."""
