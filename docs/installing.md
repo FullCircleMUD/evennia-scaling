@@ -360,6 +360,95 @@ The library does not set either. They are Evennia's settings and a consumer's to
 have its own reason for a different arrangement — but this is the one that matches how the transfer
 works.
 
+## Quick start — every setting in one place
+
+**A summary of steps 1–9, not a source.** Where this and a step above disagree, the step is right: each
+setting belongs to the library that reads it, and those libraries document their own — the links are in
+the steps. This block exists so a deployment can be stood up in one pass rather than assembled from
+nine sections.
+
+**It is not actively maintained against the siblings.** A sibling that renames or adds a setting will
+not update this block, and nothing checks it. If something here does not work, the steps above and the
+owning library's `installing.md` are the current answer, and `examples/router/server/conf/` is the
+executable one — the demo boots, so it cannot be quietly wrong the way prose can.
+
+Three files, because that is the shape the settings take: what every instance shares, what the router
+adds, and what each shard adds.
+
+**Shared, imported by every instance:**
+
+```python
+INSTALLED_APPS = list(INSTALLED_APPS) + [
+    "evennia_archive",
+    "evennia_database_cascade",
+    "evennia_message_bus",
+    "evennia_portal_multiplex",
+    "evennia_scaling",
+]
+
+MULTIPLEX_DEFAULT_INSTANCE = "router"              # the only shared literal
+SCALING_ROUTER_ID = MULTIPLEX_DEFAULT_INSTANCE
+SCALING_SHARDS = ("shard0", "shard1")              # every shard, spelled exactly
+
+SCALING_START_LOCATION_SHARD = "shard0"            # where a new character begins
+SCALING_START_LOCATION_UUID = "<uuid of that room>"
+SCALING_DEFAULT_HOME_SHARD = "shard0"              # the always-available fallback
+SCALING_DEFAULT_HOME_UUID = "<uuid of that room>"
+
+MULTIPLEX_AMP_PORT = 4006                          # the router's Portal; shards dial it
+
+EXTRA_LAUNCHER_COMMANDS = {                        # or `evennia server_start` fails silently
+    "server_start": "evennia_portal_multiplex.launcher.server_start",
+}
+
+LOCK_FUNC_MODULES = list(LOCK_FUNC_MODULES) + [    # archive's owns_character()
+    "evennia_archive.lockfuncs",
+]
+
+BASE_ACCOUNT_TYPECLASS = "typeclasses.accounts.Account"      # carrying ScalingAccountMixin
+BASE_CHARACTER_TYPECLASS = "typeclasses.characters.Character"  # ScalingCharacterMixin
+BASE_ROOM_TYPECLASS = "typeclasses.rooms.Room"               # ScalingRoomMixin — unchecked
+```
+
+**The router adds:**
+
+```python
+SCALING_ROLE = "router"
+MULTIPLEX_INSTANCE_ID = MULTIPLEX_DEFAULT_INSTANCE
+MESSAGEBUS_INSTANCE_ID = MULTIPLEX_INSTANCE_ID
+
+AUTO_PUPPET_ON_LOGIN = False        # going in character here is a transfer
+AMP_PORT = MULTIPLEX_AMP_PORT       # this instance listens
+TELNET_PORTS = [4000]
+```
+
+**Each shard adds**, with its own name and its own ports:
+
+```python
+SCALING_ROLE = "shard"
+MULTIPLEX_INSTANCE_ID = "shard0"    # the only per-instance literal
+MESSAGEBUS_INSTANCE_ID = MULTIPLEX_INSTANCE_ID
+
+AUTO_PUPPET_ON_LOGIN = True         # a session arrives already told who it is
+AMP_PORT = MULTIPLEX_AMP_PORT       # dials the router, does not listen
+TELNET_PORTS = [4020]               # never listened on; distinct so a mistake is obvious
+```
+
+**Then, last in each instance's own settings file**, after its import of the shared one:
+
+```python
+from evennia_database_cascade import configure
+
+DATABASES, DATABASE_ROUTERS = configure(DATABASES, INSTALLED_APPS, GAME_DIR, os.environ)
+```
+
+Migrate with `evennia cascade_migrate`, then start the router before the shards:
+
+```bash
+evennia start --settings settings_router          # from the router's directory
+evennia server_start --settings settings_shard0   # from each shard's
+```
+
 ## What is not checked for you
 
 `check_settings()` runs at boot and refuses an instance that cannot work — an unset role, a shard
