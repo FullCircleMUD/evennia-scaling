@@ -3,7 +3,8 @@
 What a game has to configure to run several instances, each on its own database, with characters moving
 between them.
 
-Incomplete: the library is early, and this covers the settings that exist. It grows as it does.
+The nine steps are the whole install path, and `examples/` is a working deployment of them. The
+library is early, so the settings themselves will grow.
 
 ## What a deployment looks like
 
@@ -273,11 +274,67 @@ Nothing is duplicated by this beyond the call itself: every input it takes is al
 are correct everywhere. `examples/` does exactly this in `settings_router.py`, `settings_shard0.py` and
 `settings_shard1.py`.
 
-**Not written yet:** the multiplex Portal and Server settings, and which launcher verb starts a shard.
-Both work in `examples/` — read the settings cascade there in the meantime, and see
-[evennia-portal-multiplex](../../evennia-portal-multiplex/docs/installing.md) for its half.
+## 7. Give the router the Portal, and point the shards at it
 
-## 7. Set auto-puppet per role
+One Portal, on the router. Every shard runs a Server that dials it, so the port is named once and used
+by all of them:
+
+```python
+MULTIPLEX_AMP_PORT = 4006       # shared settings, so a mismatch is impossible
+```
+
+The router's own settings, which is the instance that listens:
+
+```python
+AMP_PORT = MULTIPLEX_AMP_PORT
+TELNET_PORTS = [4000]
+```
+
+Each shard's, dialling that port rather than opening one:
+
+```python
+AMP_PORT = MULTIPLEX_AMP_PORT   # the router's Portal, not one of ours
+TELNET_PORTS = [4020]           # never listened on — see below
+```
+
+**Give every shard distinct telnet and web ports even though it never listens on them.** Starting one
+fully by accident then fails on something obvious rather than several instances quietly fighting over
+port 4000.
+
+Each instance needs its own directory: Evennia derives its database and logs from `GAME_DIR`, which is
+the directory it was started from.
+
+## 8. Declare the Server-only launcher verb, and start in order
+
+`evennia start` brings up a Portal too, which collides on the AMP port, and `evennia istart` tells the
+Portal to stop the Server it already has — which on a shared Portal is somebody else's instance.
+Multiplex supplies a verb that starts a Server and speaks to no Portal at all. Declare it on every
+instance:
+
+```python
+EXTRA_LAUNCHER_COMMANDS = {
+    "server_start": "evennia_portal_multiplex.launcher.server_start",
+}
+```
+
+Without the setting the verb does not resolve, and it fails silently — it falls through to Django and
+is reported as an unknown command.
+
+The router first, because `server_start` needs a live Portal at the address it dials:
+
+```bash
+evennia start --settings settings_router          # from the router's directory
+evennia server_start --settings settings_shard0   # from each shard's
+```
+
+**`AMP_PORT` is the launcher's control channel as well as the Server's dial target**, so `stop`,
+`reload` and `istart` run from a shard's directory all reach the *router's* Portal. `server_start` is
+the only launcher verb safe to use from a shard.
+
+Multiplex's own [installing.md](../../evennia-portal-multiplex/docs/installing.md) carries the full
+detail of its half; the above is what a router-and-shards deployment needs from it.
+
+## 9. Set auto-puppet per role
 
 Evennia's `AUTO_PUPPET_ON_LOGIN` puppets a character as soon as an account logs in. The two roles need
 opposite answers, and neither is Evennia's default behaviour for this deployment:
