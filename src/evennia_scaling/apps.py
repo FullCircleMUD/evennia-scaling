@@ -20,6 +20,10 @@ class EvenniaScalingConfig(AppConfig):
 
         config.check_settings()
 
+        # After the check, so an instance writes a refusal or a startup line
+        # and never both — this one means it started and is configured.
+        config.log_startup()
+
         # Registering a message type is an import side effect, so the module
         # has to be imported somewhere that runs on every instance. Nothing
         # else does it on a receiving instance: the sender reaches `messages`

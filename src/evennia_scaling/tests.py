@@ -617,6 +617,42 @@ class TestConfig(TestCase):
         self.assertIn("SCALING_SHARDS", logged)
         self.assertEqual(logged.count("[ERROR]"), 1)
 
+    def test_cf_24_a_configured_instance_logs_its_startup_line(self):
+        """CF-24: the one happy-path line, read back from disk.
+
+        It separates one run from the next — every other line in the file
+        is undated relative to a restart — and it states what this instance
+        believes about the others, which nothing can check across them.
+        """
+        from django.apps import apps as django_apps
+
+        clear_logs()
+        django_apps.get_app_config("evennia_scaling").ready()
+
+        logged = read_back_logs()
+        self.assertIn("[INFO]", logged)
+        self.assertIn("router", logged)        # the role, and this id
+        self.assertIn("shard0", logged)        # the roster it believes in
+        self.assertIn("shard1", logged)
+
+    @override_settings(SCALING_ROLE=None)
+    def test_cf_25_a_refused_instance_logs_no_startup_line(self):
+        """CF-25: a refusal or a startup line, never both.
+
+        The line means this instance started and is configured, which is
+        only true once the check has passed.
+        """
+        from django.apps import apps as django_apps
+        from django.core.exceptions import ImproperlyConfigured
+
+        clear_logs()
+        with self.assertRaises(ImproperlyConfigured):
+            django_apps.get_app_config("evennia_scaling").ready()
+
+        logged = read_back_logs()
+        self.assertIn("[ERROR]", logged)
+        self.assertNotIn("[INFO]", logged)
+
     def test_cf_23_a_clean_boot_logs_no_refusal(self):
         """CF-23: the file holds only real ones.
 

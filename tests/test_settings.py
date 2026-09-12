@@ -83,9 +83,12 @@ SCALING_ROLE = "router"
 # cares about one of these overrides it.
 SCALING_ROUTER_ID = "router"
 
-# This instance's name, as the bus knows it. The bus refuses to boot without
-# one, so the suite declares it as any configured instance would.
-MESSAGEBUS_INSTANCE_ID = "router"
+# This instance's name, as the bus and the multiplexer know it. Both refuse
+# to boot without one, and the library reads multiplex's for its startup
+# line — so the suite declares them as any configured instance would, and
+# equal, which is what installing.md requires of a deployment.
+MULTIPLEX_INSTANCE_ID = "router"
+MESSAGEBUS_INSTANCE_ID = MULTIPLEX_INSTANCE_ID
 
 # The typeclasses the library validates at boot. Stubs carrying the mixins,
 # as any configured game's would be — check_settings resolves these during

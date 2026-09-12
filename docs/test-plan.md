@@ -180,8 +180,27 @@ channels carry the same text on purpose, so the file and the console are not two
 before refusing, so a consumer fixes all of them in one pass rather than one per restart; splitting
 them across log lines would undo that at the moment the operator is reading.
 
-A clean boot logs nothing. Recording that the settings were fine on every start of every instance
-would bury the refusals in exactly the file kept for finding them.
+A clean boot logs no *refusal*. Recording that the settings were fine on every start of every instance
+would bury the real ones in exactly the file kept for finding them.
+
+**One startup line is the exception to keeping the happy path out**, and `CF-24` and `CF-25` pin it.
+Two things earn it:
+
+- **It separates one run from the next.** Every other line in the file is undated relative to a
+  restart, so without this there is no way to tell which lines belong to the run being investigated.
+- **It states what this instance believes about the others.** The role, this instance's id, and
+  `SCALING_SHARDS`. Nothing can check those across instances — no instance can read another's settings
+  — so the failure they produce is a session arriving where nobody intended. Each instance recording
+  its own view makes that answerable by reading two logs side by side, which is otherwise the hardest
+  class of problem here to pin down.
+
+It is written after `check_settings()` returns, so an instance logs a refusal or a startup line and
+never both: the line means *this instance started and is configured*, which is only true once the check
+has passed.
+
+**It appears once per process, not once per `evennia start`.** One start boots Django three times —
+launcher, portal and server — and `ready()` runs in each. Three identical lines is the correct
+reading of that, not a duplicate to suppress.
 
 | ID | Case | Test function |
 |---|---|---|
@@ -208,6 +227,8 @@ would bury the refusals in exactly the file kept for finding them.
 | CF-21 | The log line and the exception carry the same text, so the file and the console tell one story | test_cf_21_the_log_line_and_the_exception_carry_the_same_text |
 | CF-22 | Several problems at once are logged as they are raised — one line carrying all of them, not one line each | test_cf_22_several_problems_are_logged_as_one_line |
 | CF-23 | An instance that boots cleanly logs no refusal, so the file holds only real ones | test_cf_23_a_clean_boot_logs_no_refusal |
+| CF-24 | A configured instance logs one INFO line at startup naming its role, its instance id and the shard roster it believes in | test_cf_24_a_configured_instance_logs_its_startup_line |
+| CF-25 | An instance that refuses to start logs the refusal and no startup line | test_cf_25_a_refused_instance_logs_no_startup_line |
 
 ### AC — the account mixin
 

@@ -186,6 +186,32 @@ def get_role():
     return settings.SCALING_ROLE
 
 
+def log_startup() -> None:
+    """Record that this instance started, and what it believes.
+
+    The one happy-path line this library writes. It earns its place twice:
+    it separates one run from the next, since nothing else in the file is
+    dated relative to a restart; and it states what this instance believes
+    about the others — its own id and the roster — which nothing can check
+    across instances, because none can read another's settings. A name
+    spelled two ways is then answerable by reading two logs side by side.
+
+    Called after `check_settings()` returns, so an instance writes a refusal
+    or this and never both.
+
+    The instance id is multiplex's, as everywhere else here: a second
+    setting for the same fact would only give the two somewhere to disagree.
+    """
+    from evennia_portal_multiplex.config import get_instance_id
+
+    from .log import scaling_log
+
+    scaling_log(
+        f"started as {get_role()!r} on instance {get_instance_id()!r}. "
+        f"Shards: {tuple(get_shards())!r}. Router: {get_router_id()!r}."
+    )
+
+
 def get_default_home() -> str:
     """Return Evennia's `DEFAULT_HOME`, the room a character falls back to.
 
