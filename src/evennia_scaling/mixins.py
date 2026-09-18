@@ -601,7 +601,6 @@ class ScalingAccountMixin(ArchivableAccountMixin):
         # Evennia's, for the shape of what it hands us: `unpuppet_all()`
         # passes a queryset where every other path passes one session.
         from evennia.utils.utils import make_iter
-        from evennia_archive.api import archive
 
         from .config import ROLE_ROUTER, get_role
 
@@ -649,7 +648,7 @@ class ScalingAccountMixin(ArchivableAccountMixin):
             )
 
         for character in characters:
-            archive(character)
+            character.archive_now()
 
     def puppet_object(self, session, obj):
         """On a router, go to the character's shard instead of puppeting it.
