@@ -162,7 +162,7 @@ evennia-scaling/
 │   ├── INDEX.md
 │   ├── progress.md
 │   ├── test-plan.md
-│   ├── commands.md            # the commands changed, and the rule behind them
+│   ├── commands.md            # the commands changed and added, and the rule behind them
 │   ├── installing.md          # what a consumer configures
 │   ├── where-state-changes.md # account on the router, character on the shard
 │   ├── transfer-step-by-step.md # every step of a transfer, and which library owns each
@@ -177,7 +177,8 @@ evennia-scaling/
 │       ├── handoff.py         # leaving an instance, and reporting the outcome
 │       ├── commands.py        # the account-command overrides, `ooc` included
 │       ├── channel_command.py # `channel`, less the switches that write account state
-│       ├── at_server_startstop.py  # installs the channel override after `evennia._init()`
+│       ├── shard_check.py     # `shard_check` — which instance this session is on
+│       ├── at_server_startstop.py  # installs `channel` and `shard_check` after `evennia._init()`
 │       ├── models.py          # the ticket row, in the game database
 │       ├── migrations/
 │       ├── tickets.py         # minting, storing, sweeping and redeeming

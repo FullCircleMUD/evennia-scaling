@@ -1,9 +1,11 @@
-# Commands this library changes
+# Commands this library changes and adds
 
 The library replaces nine of Evennia's default commands. Seven can no longer be used while playing a
 character, and two — `channel` and `nick` — keep working in character with the parts that write to the
 account held back. This is what a consumer's players will notice, and the rule a consumer's own
 commands should follow.
+
+It also adds one command of its own, `shard_check`.
 
 ## The principle
 
@@ -43,6 +45,14 @@ in character exactly as it always did.
 
 Altered so nicks do not cross between the two. Used in character it affects the character's nicks only;
 used out of character it affects the account's nicks only.
+
+## `shard_check`
+
+Added, not replaced. Tells the caller which instance they are on and its role — `You are on shard0
+(shard).` Developers only.
+
+It is in Evennia's `AccountCmdSet`, so it works out of character and in character. The library adds it
+at server start; a consumer installs nothing.
 
 ## Commands a consumer writes
 
