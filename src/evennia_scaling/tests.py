@@ -4531,3 +4531,154 @@ class TestShardCheck(TestCase):
                 self.assertEqual(
                     CmdShardCheck().access(account, "cmd"), allowed
                 )
+
+
+class TestTeleport(unittest.TestCase):
+    """TP — `tel/shard`."""
+
+    def _command(self, args, superuser=True):
+        from unittest import mock
+
+        from evennia_scaling.teleport import ScalingCmdTeleport
+
+        command = ScalingCmdTeleport()
+        # What the cmdhandler hands a command: everything after the key,
+        # switches included.
+        command.args = args
+        command.caller = mock.Mock()
+        command.account = mock.Mock(is_superuser=superuser)
+        command.session = _PlayingSession()
+        command.msg = mock.Mock()
+        return command
+
+    def _run(self, args, superuser=True, evennias_parse=False):
+        """`parse` then `func`, as the cmdhandler calls them, on shard0.
+
+        Evennia's `func` and the transfer are captured. Evennia's `parse` is
+        too unless `evennias_parse` asks for the real one.
+        """
+        from contextlib import ExitStack
+        from unittest import mock
+
+        from evennia_scaling.teleport import ScalingCmdTeleport
+
+        # Evennia's own class, reached through the bases: `at_server_init()`
+        # replaces `building.CmdTeleport` with ours.
+        evennias_class = ScalingCmdTeleport.__bases__[0]
+
+        command = self._command(args, superuser=superuser)
+        with ExitStack() as stack:
+            stack.enter_context(
+                override_settings(
+                    SCALING_ROLE="shard", MULTIPLEX_INSTANCE_ID="shard0"
+                )
+            )
+            evennias_parse_mock = None
+            if not evennias_parse:
+                evennias_parse_mock = stack.enter_context(
+                    mock.patch.object(evennias_class, "parse")
+                )
+            evennias_func = stack.enter_context(
+                mock.patch.object(evennias_class, "func")
+            )
+            transfer = stack.enter_context(
+                mock.patch("evennia_scaling.handoff.transfer_to_instance")
+            )
+            command.parse()
+            command.func()
+        return command, evennias_parse_mock, evennias_func, transfer
+
+    def test_tp_01_without_shard_evennias_parse_and_func_run(self):
+        """TP-01"""
+        _, evennias_parse, evennias_func, transfer = self._run("Limbo")
+
+        evennias_parse.assert_called_once()
+        evennias_func.assert_called_once()
+        transfer.assert_not_called()
+
+    def test_tp_02_shard_is_accepted_alongside_evennias_switches(self):
+        """TP-02"""
+        from evennia_scaling.teleport import ScalingCmdTeleport
+
+        evennias = ScalingCmdTeleport.__bases__[0].switch_options
+        ours = ScalingCmdTeleport.switch_options
+
+        self.assertIn("shard", ours)
+        for switch in evennias:
+            self.assertIn(switch, ours)
+
+    def test_tp_03_with_shard_the_argument_is_not_searched_for(self):
+        """TP-03: a shard name is not an object, and searching says so."""
+        command, evennias_parse, _, _ = self._run("/shard shard1")
+
+        evennias_parse.assert_not_called()
+        command.caller.search.assert_not_called()
+
+    def test_tp_04_shard_transfers_the_caller_to_another_shard(self):
+        """TP-04"""
+        command, _, evennias_func, transfer = self._run("/shard shard1")
+
+        transfer.assert_called_once_with(
+            command.account, command.session, command.caller, "shard1"
+        )
+        evennias_func.assert_not_called()
+
+    def test_tp_05_this_instances_own_name_is_refused(self):
+        """TP-05"""
+        command, _, _, transfer = self._run("/shard shard0")
+
+        transfer.assert_not_called()
+        command.msg.assert_called()
+
+    def test_tp_06_a_name_not_in_scaling_shards_is_refused(self):
+        """TP-06: the router is an instance, and not a shard."""
+        for name in ("nowhere", "router"):
+            with self.subTest(name=name):
+                command, _, _, transfer = self._run(f"/shard {name}")
+
+                transfer.assert_not_called()
+                command.msg.assert_called()
+
+    def test_tp_07_no_name_is_refused(self):
+        """TP-07"""
+        command, _, _, transfer = self._run("/shard")
+
+        transfer.assert_not_called()
+        command.msg.assert_called()
+
+    def test_tp_08_an_account_that_is_not_a_superuser_is_refused(self):
+        """TP-08: only a superuser arrives in Limbo."""
+        command, _, _, transfer = self._run("/shard shard1", superuser=False)
+
+        transfer.assert_not_called()
+        command.msg.assert_called()
+
+    def test_tp_09_at_server_init_installs_the_teleport_override(self):
+        """TP-09: restored afterwards, as `LK-10` restores the channel's."""
+        from evennia.commands.default import building
+
+        from evennia_scaling.at_server_startstop import at_server_init
+        from evennia_scaling.teleport import ScalingCmdTeleport
+
+        original = building.CmdTeleport
+        try:
+            at_server_init()
+            self.assertIs(building.CmdTeleport, ScalingCmdTeleport)
+        finally:
+            building.CmdTeleport = original
+
+    def test_tp_10_the_help_text_documents_shard(self):
+        """TP-10: a subclass does not inherit `__doc__`."""
+        from evennia_scaling.teleport import ScalingCmdTeleport
+
+        self.assertIn("tel/shard", ScalingCmdTeleport.__doc__ or "")
+
+    def test_tp_11_evennias_switches_reach_its_func(self):
+        """TP-11: the switches survive being parsed twice."""
+        command, _, evennias_func, _ = self._run(
+            "/quiet Limbo", evennias_parse=True
+        )
+
+        evennias_func.assert_called_once()
+        self.assertEqual(command.switches, ["quiet"])
+        self.assertEqual(command.lhs, "Limbo")

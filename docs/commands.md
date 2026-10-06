@@ -1,9 +1,9 @@
 # Commands this library changes and adds
 
-The library replaces nine of Evennia's default commands. Seven can no longer be used while playing a
-character, and two — `channel` and `nick` — keep working in character with the parts that write to the
-account held back. This is what a consumer's players will notice, and the rule a consumer's own
-commands should follow.
+The library replaces ten of Evennia's default commands. Seven can no longer be used while playing a
+character, two — `channel` and `nick` — keep working in character with the parts that write to the
+account held back, and `tel` gains a switch for changing shard. This is what a consumer's players will
+notice, and the rule a consumer's own commands should follow.
 
 It also adds one command of its own, `shard_check`.
 
@@ -53,6 +53,23 @@ Added, not replaced. Tells the caller which instance they are on and its role �
 
 It is in Evennia's `AccountCmdSet`, so it works out of character and in character. The library adds it
 at server start; a consumer installs nothing.
+
+## `tel/shard`
+
+Evennia's `tel` with one switch added. `tel/shard <shard>` sends a superuser to Limbo on that shard, and
+from there `tel` works as it always does, against that shard's database. Without the switch the command
+is Evennia's, unchanged.
+
+Superusers only. A superuser arrives in Limbo; anyone else arrives through the placement cascade, which
+looks for the room they left, does not find it on the new shard, and can send them back to their home
+shard.
+
+A name or a dbref resolves only on the instance you are standing on, because no instance can see
+another's database. To reach a room on another shard, change shard first.
+
+The library puts it in place of Evennia's `building.CmdTeleport` at server start, so Evennia's
+`CharacterCmdSet` picks it up. A consumer that builds its character cmdset without Evennia's adds
+`ScalingCmdTeleport` from `evennia_scaling.teleport` itself.
 
 ## Commands a consumer writes
 

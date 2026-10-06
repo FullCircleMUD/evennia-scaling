@@ -178,7 +178,8 @@ evennia-scaling/
 │       ├── commands.py        # the account-command overrides, `ooc` included
 │       ├── channel_command.py # `channel`, less the switches that write account state
 │       ├── shard_check.py     # `shard_check` — which instance this session is on
-│       ├── at_server_startstop.py  # installs `channel` and `shard_check` after `evennia._init()`
+│       ├── teleport.py        # `tel/shard` — a superuser changing shard
+│       ├── at_server_startstop.py  # installs `channel`, `tel` and `shard_check` after `evennia._init()`
 │       ├── models.py          # the ticket row, in the game database
 │       ├── migrations/
 │       ├── tickets.py         # minting, storing, sweeping and redeeming

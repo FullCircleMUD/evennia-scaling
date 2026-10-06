@@ -11,7 +11,7 @@ See docs/test-plan.md § LK.
 
 
 def at_server_init():
-    """Point Evennia's channel command at ours.
+    """Point Evennia's channel and teleport commands at ours.
 
     The earliest hook Evennia calls, and late enough: `evennia._init()` has
     run by now, so `comms` — which reaches Evennia's lazy ``Command`` export
@@ -32,6 +32,14 @@ def at_server_init():
     from .channel_command import ScalingCmdChannel
 
     comms.CmdChannel = ScalingCmdChannel
+
+    # `building` imports `evmenu` too, so `tel/shard` is installed here for
+    # the same reason, by the same swap.
+    from evennia.commands.default import building
+
+    from .teleport import ScalingCmdTeleport
+
+    building.CmdTeleport = ScalingCmdTeleport
 
     _install_shard_check()
 

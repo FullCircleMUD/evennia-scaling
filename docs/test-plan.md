@@ -29,6 +29,7 @@ Behaviour is agreed here first, before any test or code — see
 | `SH` | Where a character is in the game world |
 | `SV` | Startup validation of the consumer's typeclasses |
 | `TK` | Tickets — what lets an arriving session be recognised |
+| `TP` | `tel/shard` — a superuser changing instance |
 
 ## Fixtures
 
@@ -1501,3 +1502,42 @@ one of them. It asserts the ID and the role appear in what the caller is told, n
 **CK-02 asserts membership only.** The account cmdset is merged into a puppet's while in character —
 that is Evennia's behaviour, not this library's. Installed from `at_server_init()` with the channel
 override, because `cmdset_account` imports `comms`.
+
+### TP — `tel/shard`
+
+`ScalingCmdTeleport` is Evennia's `CmdTeleport` with one switch added. `tel/shard <shard>` sends the
+caller to that shard through `transfer_to_instance`, and they arrive in Limbo — where `PL` puts every
+superuser. From there Evennia's `tel` works as it always does, against that shard's database.
+
+**Without `/shard`, it is Evennia's command.** `parse` and `func` each check for the switch and hand
+everything else to `super()`. `parse` has to branch as well as `func`: Evennia's `parse` searches for the
+argument as an object, and a shard name is not one.
+
+**Superusers only.** Arriving in Limbo is what lets the hop land anywhere, and only a superuser arrives
+there. Anyone else arrives through the placement cascade, which reads the room they left — a room the new
+shard does not have — and can send them straight back to their home shard.
+
+**The help text is the class's own.** Evennia builds help from the docstring and a subclass does not
+inherit `__doc__`, so it carries Evennia's text with `/shard` added.
+
+Installed from `at_server_init()`, because `building` imports `evmenu`. It points
+`building.CmdTeleport` at the subclass, so Evennia's `CharacterCmdSet` picks it up; a consumer building
+its own cmdset adds the class.
+
+| ID | Case | Test function |
+|---|---|---|
+| TP-01 | Without `/shard`, Evennia's `parse` and `func` run | test_tp_01_without_shard_evennias_parse_and_func_run |
+| TP-02 | `shard` is accepted alongside Evennia's own switches | test_tp_02_shard_is_accepted_alongside_evennias_switches |
+| TP-03 | With `/shard`, the argument is not searched for as an object | test_tp_03_with_shard_the_argument_is_not_searched_for |
+| TP-04 | `/shard` with another shard transfers the caller's account, session and character to it | test_tp_04_shard_transfers_the_caller_to_another_shard |
+| TP-05 | `/shard` with this instance's own name is refused and transfers nothing | test_tp_05_this_instances_own_name_is_refused |
+| TP-06 | `/shard` with a name not in `SCALING_SHARDS` is refused and transfers nothing | test_tp_06_a_name_not_in_scaling_shards_is_refused |
+| TP-07 | `/shard` with no name is refused and transfers nothing | test_tp_07_no_name_is_refused |
+| TP-08 | `/shard` from an account that is not a superuser is refused and transfers nothing | test_tp_08_an_account_that_is_not_a_superuser_is_refused |
+| TP-09 | `at_server_init()` points `building.CmdTeleport` at the override | test_tp_09_at_server_init_installs_the_teleport_override |
+| TP-10 | The override's help text documents `/shard` | test_tp_10_the_help_text_documents_shard |
+| TP-11 | Without `/shard`, Evennia's own switches still reach its `func` | test_tp_11_evennias_switches_reach_its_func |
+
+**TP-11 is the cost of reading the switches first.** MuxCommand's `parse` rewrites `self.args` with the
+switches removed, so handing that to Evennia's `parse` parses it a second time and loses `/quiet`, `/loc`
+and the rest. The raw argument is put back first.
