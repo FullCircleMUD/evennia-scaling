@@ -4447,3 +4447,87 @@ class TestArrival(TestCase):
         back = AccountDB.objects.get(pk=session.uid)
         self.assertIsNone(back.db._last_puppet)
 
+
+
+class _Caller:
+    """Collects what a command tells it."""
+
+    def __init__(self):
+        self.said = []
+
+    def msg(self, text=None, **kwargs):
+        self.said.append(str(text))
+
+
+class TestShardCheck(TestCase):
+    """CK — which instance a session is on."""
+
+    #: Creating an account mints its archive identity, which is written to
+    #: the archive database.
+    databases = {"default", "archive"}
+
+    _next = 0
+
+    def setUp(self):
+        from evennia.utils.idmapper.models import flush_cache
+
+        super().setUp()
+        flush_cache()
+
+    def _run(self):
+        from evennia_scaling.shard_check import CmdShardCheck
+
+        caller = _Caller()
+        command = CmdShardCheck()
+        command.caller = caller
+        command.func()
+        return "\n".join(caller.said)
+
+    def test_ck_01_it_answers_this_instances_id_and_role(self):
+        """CK-01: two instances, so an answer not read from settings fails one."""
+        for instance_id, role in (("shard0", "shard"), ("router", "router")):
+            with self.subTest(instance=instance_id):
+                with override_settings(
+                    MULTIPLEX_INSTANCE_ID=instance_id, SCALING_ROLE=role
+                ):
+                    said = self._run()
+                self.assertIn(instance_id, said)
+                self.assertIn(role, said)
+
+    def test_ck_02_it_is_in_the_account_cmdset(self):
+        """CK-02: membership only — the merge in character is Evennia's."""
+        from evennia.commands.default.cmdset_account import AccountCmdSet
+
+        from evennia_scaling.at_server_startstop import at_server_init
+
+        at_server_init()
+
+        keys = [command.key for command in AccountCmdSet().commands]
+        self.assertIn("shard_check", keys)
+
+    def _account(self, permission=None):
+        """An account that is not a superuser, so its lock is consulted."""
+        from evennia.utils.create import create_account
+
+        from tests.game_typeclasses import ScalingAccount
+
+        TestShardCheck._next += 1
+        name = f"checker{TestShardCheck._next}"
+        account = create_account(
+            name, f"{name}@example.com", "testpassword123",
+            typeclass=ScalingAccount,
+        )
+        if permission:
+            account.permissions.add(permission)
+        return account
+
+    def test_ck_03_only_a_developer_may_run_it(self):
+        """CK-03"""
+        from evennia_scaling.shard_check import CmdShardCheck
+
+        for permission, allowed in (("Developer", True), (None, False)):
+            with self.subTest(permission=permission):
+                account = self._account(permission)
+                self.assertEqual(
+                    CmdShardCheck().access(account, "cmd"), allowed
+                )

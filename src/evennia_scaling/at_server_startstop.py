@@ -32,3 +32,30 @@ def at_server_init():
     from .channel_command import ScalingCmdChannel
 
     comms.CmdChannel = ScalingCmdChannel
+
+    _install_shard_check()
+
+
+def _install_shard_check():
+    """Add `shard_check` to Evennia's `AccountCmdSet`.
+
+    A new command rather than a replacement, so there is no module attribute
+    to repoint: the cmdset's creation hook is wrapped instead. Here rather than
+    in `ready()` for the channel override's reason — `cmdset_account` imports
+    `comms`. Guarded, because the hook can run more than once.
+    """
+    from evennia.commands.default.cmdset_account import AccountCmdSet
+
+    from .shard_check import CmdShardCheck
+
+    if getattr(AccountCmdSet, "_scaling_shard_check_installed", False):
+        return
+
+    original = AccountCmdSet.at_cmdset_creation
+
+    def at_cmdset_creation(self):
+        original(self)
+        self.add(CmdShardCheck())
+
+    AccountCmdSet.at_cmdset_creation = at_cmdset_creation
+    AccountCmdSet._scaling_shard_check_installed = True

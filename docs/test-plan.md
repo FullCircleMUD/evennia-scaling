@@ -1483,3 +1483,21 @@ ordinary connection, and logging it would bury the real refusals.
 | TK-15 | Success also consumes any other ticket for the same character | test_tk_15_redeeming_consumes_siblings_for_the_same_character |
 | TK-16 | Each refusal is logged with the check that failed | test_tk_16_a_refusal_is_logged_with_the_failed_check |
 | TK-17 | No token returns `None` and logs nothing | test_tk_17_no_token_is_silent |
+
+### CK — `shard_check`
+
+Which instance a session is on, asked from inside the game. A Developer moving between instances has
+no other way to tell from where they stand.
+
+| ID | Case | Test function |
+|---|---|---|
+| CK-01 | It tells the caller the instance ID and role this instance runs under, as its settings declare them | test_ck_01_it_answers_this_instances_id_and_role |
+| CK-02 | It is in Evennia's `AccountCmdSet`, so it can be used out of character and in character | test_ck_02_it_is_in_the_account_cmdset |
+| CK-03 | Only a Developer may run it | test_ck_03_only_a_developer_may_run_it |
+
+**CK-01 runs under two instances**, a shard and the router, so an answer not read from settings fails
+one of them. It asserts the ID and the role appear in what the caller is told, not the wording.
+
+**CK-02 asserts membership only.** The account cmdset is merged into a puppet's while in character —
+that is Evennia's behaviour, not this library's. Installed from `at_server_init()` with the channel
+override, because `cmdset_account` imports `comms`.
