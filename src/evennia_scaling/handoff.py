@@ -470,18 +470,6 @@ def move_session(account, session, to_instance):
     )
 
 
-def _delete_holding_no_session(character):
-    """Delete the character that left, with its sessions cleared first.
-
-    It still names the leaving session in `db_sessid`, and this instance can
-    still hold that session while the move completes. Evennia's `delete`
-    messages and unpuppets every session the object names. The unpuppet's
-    one addition, archiving, was done before the ticket. See HO-20.
-    """
-    character.sessions.clear()
-    character.delete()
-
-
 def transfer_to_instance(account, session, character, to_instance):
     """Move a session and what it is playing to another instance.
 
@@ -581,7 +569,7 @@ def transfer_to_instance(account, session, character, to_instance):
     # dead object. `delay(0, ...)` is `reactor.callLater(0, ...)`, which
     # cannot run until this call stack unwinds — so the delete is
     # structurally after Evennia is done, not merely likely to be.
-    delay(0, _delete_holding_no_session, character)
+    delay(0, character.delete)
 
     # A dict, not a string: multiplex serialises the payload itself, and
     # encoding it here too lands a JSON string of a JSON string at the far

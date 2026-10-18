@@ -474,16 +474,10 @@ class ScalingAccountMixin(ArchivableAccountMixin):
             # No cache flush needed: Evennia's `delete` calls
             # `flush_from_cache` itself, and a `pre_delete` signal evicts
             # the instance as well.
-            #
-            # Sessions cleared first: a stale copy still names the session
-            # it was last puppeted by, which keeps its id across a hop and
-            # can be the one arriving. `delete` messages and unpuppets every
-            # session the object names. See AC-20.
             for character in ObjectDB.objects.filter(
                 db_attributes__db_key=OWNER_ACCOUNT_KEY,
                 db_attributes__db_strvalue=str(archive_id),
             ):
-                character.sessions.clear()
                 character.delete()
             existing.delete()
 

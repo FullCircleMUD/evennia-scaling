@@ -27,8 +27,7 @@ No gaps: this path is complete.
 - **[bus]** `SessionAuthorized` carries the ticket to the destination, which stores it with an expiry
   stamped from its own clock
 - **[scaling]** the local character is deleted, queued for the next reactor turn so Evennia has
-  finished with the object first, and with its sessions cleared so the delete neither messages nor
-  unpuppets the session that is leaving
+  finished with the object first
 - **[multiplex]** the session is handed to the destination Server behind the one Portal, carrying the
   token in its payload
 - **[scaling]** the outcome comes back, and anything but a move is logged; the player is told where a
@@ -92,9 +91,8 @@ No gaps: this path is complete.
   than at the next poll
 - **[scaling]** the ticket is redeemed: expired rows are swept, the token looked up, the addressee
   checked, and every ticket naming that character deleted
-- **[archive]** the account is rebuilt — a shard deletes its stale copy first, each character's
-  sessions cleared so the arriving session is left out of it, while the router restores, which hands
-  back its live account untouched
+- **[archive]** the account is rebuilt — a shard deletes its stale copy first, while the router
+  restores, which hands back its live account untouched
 - **[archive]** the character is restored and added back to the account's roster
 - **[scaling]** on a shard, the character is placed: the room it recorded, then its home, then the
   deployment's default home. A superuser goes to Limbo instead
