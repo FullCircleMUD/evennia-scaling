@@ -293,6 +293,11 @@ They are found by the owner stamp rather than by `db_account` or the roster. The
 survives an archive round trip, and it is what `restore_missing_characters` searches by, so the delete and the
 restore agree by construction.
 
+**Each is deleted holding no session.** A stale copy still names in `db_sessid` the session it was last
+puppeted by, and a session keeps its id across a hop, so the session it names can be the arriving one.
+Evennia's `delete` messages and unpuppets every session the object names. Clearing the copy's sessions
+first leaves the live session out of a delete that has nothing to do with it.
+
 `restore_missing_characters` is a separate step, gated on the role inside itself so a caller never branches. On a
 shard it does nothing: a shard holds one character, the one its ticket names.
 
@@ -382,6 +387,7 @@ also fires `at_post_add_character`.
 | AC-17 | A restored account gets its characters back with it | test_ac_17_a_restored_account_gets_its_characters |
 | AC-18 | An account that was already here gets any stranded character back at login | test_ac_18_a_stranded_character_comes_back_at_login |
 | AC-19 | The instance root is `#1` **and** a superuser — neither half names it alone | test_ac_19_the_instance_root_is_both_halves |
+| AC-20 | A stale local character is deleted holding no session — a live session its `db_sessid` names is neither messaged nor unpuppeted | test_ac_20_a_stale_character_is_deleted_holding_no_session |
 
 ### SH — where a character is in the game world
 
@@ -922,6 +928,12 @@ fails the same way. `delay(0, ...)` resolves to `reactor.callLater(0, ...)`, whi
 current call stack unwinds; commands run in the reactor thread, so the delete is *structurally* after
 Evennia has finished with the character. A busy server delays it; nothing can reorder it.
 
+**The character is deleted holding no session.** When the deferred delete runs, the character still
+names the leaving session in `db_sessid`, and this instance can still hold that session while the move
+completes. Evennia's `delete` messages and unpuppets every session the object names, so the player would
+read *"Your character … has been destroyed"* on arriving. The sessions are cleared first. Nothing is
+lost by the skipped unpuppet: its one addition, archiving the character, has already been done above.
+
 **The outcome is handled here, not by the caller.** `send_session` returns a Deferred of
 `(moved, outcome)`. Handling it here means the in-character and out-of-character paths — and a
 consumer's own shard-to-shard move — all report the same way, from one table:
@@ -974,6 +986,7 @@ The Deferred is still returned, so a caller can chain onto it. Nothing has to.
 | HO-14 | An error the move did not turn into an outcome is logged, and the player is told | test_ho_14_an_error_is_logged_and_reported |
 | HO-18 | Leaving for a shard stamps `current_shard` with it, before the character is archived | test_ho_18_leaving_stamps_the_destination_shard |
 | HO-19 | Leaving for the router does not stamp — the router is never a legal `current_shard` | test_ho_19_leaving_for_the_router_stamps_nothing |
+| HO-20 | The character is deleted holding no session — the session that left is neither messaged nor unpuppeted by the delete | test_ho_20_the_character_is_deleted_holding_no_session |
 
 ### IC — going in character
 

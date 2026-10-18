@@ -868,6 +868,35 @@ class TestAccountMixin(TestCase):
 
         self.assertFalse(ObjectDB.objects.filter(pk=character_pk).exists())
 
+    def test_ac_20_a_stale_character_is_deleted_holding_no_session(self):
+        """AC-20: a stale copy can name the arriving session in `db_sessid`.
+
+        A session keeps its id across a hop, and Evennia's `delete` messages
+        and unpuppets every session the object names.
+        """
+        from unittest import mock
+
+        from evennia.objects.models import ObjectDB
+        from evennia_archive.api import archive
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account = self._account()
+        character, errors = account.create_character(
+            key="Rowan", typeclass="tests.game_typeclasses.ScalingCharacter"
+        )
+        self.assertFalse(errors, errors)
+        character_pk = character.pk
+        session = _attach_live_session(self, character)
+
+        archive(account)
+        with mock.patch.object(ScalingAccount, "unpuppet_object") as unpuppet:
+            ScalingAccount.rebuild_from_archive(account.archive_id)
+
+        self.assertFalse(ObjectDB.objects.filter(pk=character_pk).exists())
+        session.msg.assert_not_called()
+        unpuppet.assert_not_called()
+
     def test_ac_07_an_absent_account_is_restored_by_username(self):
         """AC-07: the login door knows a username and nothing else.
 
@@ -2191,6 +2220,24 @@ def _as_another_account(account=None):
     )
 
 
+def _attach_live_session(test, character, sessid=9001):
+    """A session this instance holds, named in `character`'s `db_sessid`.
+
+    Registered in Evennia's session handler, because an object resolves
+    the sessions it names there and drops any it does not find.
+    """
+    from unittest import mock
+
+    import evennia
+
+    session = mock.MagicMock(sessid=sessid)
+    evennia.SESSION_HANDLER[sessid] = session
+    test.addCleanup(evennia.SESSION_HANDLER.pop, sessid, None)
+    character.sessions.add(session)
+    test.assertEqual(character.sessions.all(), [session])
+    return session
+
+
 class TestHandoff(TestCase):
     """HO — sending a session and what it plays to another instance."""
 
@@ -2424,6 +2471,33 @@ class TestHandoff(TestCase):
 
         self.assertEqual(character.current_shard, "shard0")
 
+    def test_ho_20_the_character_is_deleted_holding_no_session(self):
+        """HO-20: when the deferred delete runs, the character still names
+        the leaving session, and this instance can still hold it.
+
+        Evennia's `delete` messages and unpuppets every session the object
+        names, so the player reads that their character has been destroyed
+        on arriving.
+        """
+        from unittest import mock
+
+        from evennia.objects.models import ObjectDB
+
+        from tests.game_typeclasses import ScalingAccount
+
+        account, character = self._playing()
+        session = _attach_live_session(self, character)
+        _, _, delay, _ = self._transfer(account, character)
+
+        character_pk = character.pk
+        _, deferred, *args = delay.call_args.args
+        with mock.patch.object(ScalingAccount, "unpuppet_object") as unpuppet:
+            deferred(*args)
+
+        self.assertFalse(ObjectDB.objects.filter(pk=character_pk).exists())
+        session.msg.assert_not_called()
+        unpuppet.assert_not_called()
+
     def test_ho_01_leaving_the_router_archives_the_account(self):
         """HO-01: the router is the only place an account can change.
 
@@ -2546,10 +2620,19 @@ class TestHandoff(TestCase):
         `reactor.callLater(0, ...)`, which cannot run until the stack
         unwinds — structurally after, not merely likely to be.
         """
+        from evennia.objects.models import ObjectDB
+
         account, character = self._playing()
         _, _, delay, _ = self._transfer(account, character)
 
-        delay.assert_called_once_with(0, character.delete)
+        delay.assert_called_once()
+        seconds, deferred, *args = delay.call_args.args
+        self.assertEqual(seconds, 0)
+        self.assertTrue(ObjectDB.objects.filter(pk=character.pk).exists())
+
+        character_pk = character.pk
+        deferred(*args)
+        self.assertFalse(ObjectDB.objects.filter(pk=character_pk).exists())
 
     def test_ho_05_hands_the_session_off_carrying_the_ticket(self):
         """HO-05: the payload is how the destination recognises it."""
