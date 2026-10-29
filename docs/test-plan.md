@@ -1159,6 +1159,7 @@ builder-only does that themselves.
 | LK-16 | `ready()` points `general.CmdNick` at the override | test_lk_16_ready_points_nick_at_the_override |
 | LK-17 | In character, each of the seven is refused — the lock is consulted and says no | test_lk_17_the_seven_are_refused_in_character |
 | LK-18 | Out of character, each of the seven is allowed — the lockfunc resolves and says yes | test_lk_18_the_seven_are_allowed_out_of_character |
+| LK-19 | `nick` answers to `alias`, alongside Evennia's own aliases | test_lk_19_nick_answers_to_alias |
 
 
 `LK-01`, `LK-02` and `LK-03` are retired and their IDs are not reused.

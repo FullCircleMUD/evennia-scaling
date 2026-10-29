@@ -44,7 +44,8 @@ in character exactly as it always did.
 ## `nick`
 
 Altered so nicks do not cross between the two. Used in character it affects the character's nicks only;
-used out of character it affects the account's nicks only.
+used out of character it affects the account's nicks only. Answers to `alias` as well as Evennia's
+`nickname` and `nicks`.
 
 ## `shard_check`
 

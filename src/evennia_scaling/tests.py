@@ -3528,6 +3528,14 @@ class TestNickCommand(TestCase):
 
         self.assertIs(general.CmdNick, ScalingCmdNick)
 
+    def test_lk_19_nick_answers_to_alias(self):
+        """LK-19: and keeps the aliases Evennia gives it."""
+        from evennia.commands.default.general import CmdNick
+
+        from evennia_scaling.commands import ScalingCmdNick
+
+        self.assertEqual(set(ScalingCmdNick().aliases), set(CmdNick().aliases) | {"alias"})
+
 
 class _FakeMessage:
     """Stands in for a bus row — the two fields a handler reads."""

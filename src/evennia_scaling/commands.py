@@ -104,7 +104,11 @@ class ScalingCmdNick(CmdNick):
     account's nicks with it. Written without the reach-through, the one
     line covers both halves — the caller is the character in character and
     the account out of it, and nothing has to detect which.
+
+    It also answers to `alias`, beside Evennia's own two.
     """
+
+    aliases = [*CmdNick.aliases, "alias"]
 
     def func(self):
         if "clearall" not in self.switches:
