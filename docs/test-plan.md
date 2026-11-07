@@ -957,6 +957,7 @@ The Deferred is still returned, so a caller can chain onto it. Nothing has to.
 |---|---|---|
 | HO-01 | Leaving the router archives the account and not the character | test_ho_01_leaving_the_router_archives_the_account |
 | HO-15 | Leaving a shard archives the character and not the account | test_ho_15_leaving_a_shard_archives_the_character |
+| HO-20 | Leaving a shard with the character still puppeted releases it through `unpuppet_object`, which does the archiving, rather than archiving it directly | test_ho_20_a_puppeted_character_is_released_by_the_transfer |
 | HO-16 | Account `#1` is refused: nothing archived, no ticket, no move, and they are told why | test_ho_16_account_one_is_refused |
 | HO-17 | A superuser that is not `#1` transfers like any other account | test_ho_17_another_superuser_transfers |
 | HO-02 | The ticket names both archive ids and the destination | test_ho_02_mints_a_ticket_naming_both_and_the_destination |

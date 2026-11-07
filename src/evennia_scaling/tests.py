@@ -2227,11 +2227,12 @@ class TestHandoff(TestCase):
         self.assertFalse(errors, errors)
         return account, character
 
-    def _transfer(self, account, character, to_instance="shard0"):
+    def _transfer(self, account, character, to_instance="shard0", session=None):
         """Run a transfer with the two outside calls captured.
 
         `send_session` reaches the Portal and `delay` reaches the reactor;
         neither exists in a test, and both are what the cases assert about.
+        The session puppets nothing unless one is passed.
         """
         from unittest import mock
 
@@ -2244,7 +2245,7 @@ class TestHandoff(TestCase):
             "evennia_scaling.handoff.send_session", return_value=pending
         ) as send, mock.patch("evennia_scaling.handoff.delay") as delay:
             returned = transfer_to_instance(
-                account, _PlayingSession(), character, to_instance
+                account, session or _PlayingSession(), character, to_instance
             )
         return returned, send, delay, pending
 
@@ -2460,6 +2461,27 @@ class TestHandoff(TestCase):
         )
 
         self.assertEqual(archived, [character])
+
+    @override_settings(SCALING_ROLE="shard")
+    def test_ho_20_a_puppeted_character_is_released_by_the_transfer(self):
+        """HO-20: releasing fires the character's unpuppet hooks, so what
+        they write is in the archive.
+
+        `unpuppet_object` archives the character itself, so the transfer
+        does not archive it as well.
+        """
+        from unittest import mock
+
+        account, character = self._playing()
+        session = _PlayingSession(puppet=character)
+
+        with mock.patch.object(type(account), "unpuppet_object") as releasing:
+            archived = self._archived_by_the_transfer(
+                account, character, to_instance="shard1", session=session
+            )
+
+        releasing.assert_called_once_with(session)
+        self.assertNotIn(character, archived)
 
     def test_ho_16_account_one_is_refused(self):
         """HO-16: #1 belongs to the instance it was made on.

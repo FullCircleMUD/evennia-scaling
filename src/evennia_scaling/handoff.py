@@ -497,7 +497,9 @@ def transfer_to_instance(account, session, character, to_instance):
 
     1. Archive whichever of the two could have changed here — here rather
        than when the session closes, because the destination rebuilds on
-       arrival while this instance is still tearing its session down.
+       arrival while this instance is still tearing its session down. A
+       character still puppeted is unpuppeted, and `unpuppet_object`
+       archives it; one not puppeted is archived directly.
     2. Mint a ticket naming both, addressed to ``to_instance``.
     3. Send it over the bus, so the destination learns of the transfer
        independently of the session that is about to arrive.
@@ -557,7 +559,12 @@ def transfer_to_instance(account, session, character, to_instance):
     if to_instance in get_shards():
         character.current_shard = to_instance
 
-    archive(account if get_role() == ROLE_ROUTER else character)
+    if get_role() == ROLE_ROUTER:
+        archive(account)
+    elif session.puppet:
+        account.unpuppet_object(session)
+    else:
+        archive(character)
 
     ticket = create_ticket(
         str(account.archive_id), str(character.archive_id), to_instance
