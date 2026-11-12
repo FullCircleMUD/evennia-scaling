@@ -2560,16 +2560,94 @@ class TestHandoff(TestCase):
 
         self.assertEqual(message.send.call_args.args[0], "shard1")
 
-    def test_ho_04_defers_the_character_delete(self):
-        """HO-04: `CmdIC` still uses the character after this returns.
+    def _answered(self, account, character, outcome=None, error=None):
+        """Run a transfer, answer the move, and return what was deferred.
 
-        It writes `_last_puppet` and logs against it, so an inline delete
-        makes Evennia serialise a dead object. `delay(0, ...)` is
+        Returns how many times `delay` was called before the answer, and
+        the `delay` mock after it. An ``error`` answers with an errback in
+        place of an outcome; it is trapped afterwards, because the
+        Deferred hands it on and an untrapped one is reported at garbage
+        collection.
+        """
+        from unittest import mock
+
+        from twisted.internet.defer import Deferred
+
+        from evennia_scaling.handoff import transfer_to_instance
+
+        pending = Deferred()
+        with mock.patch(
+            "evennia_scaling.handoff.send_session", return_value=pending
+        ), mock.patch("evennia_scaling.handoff.delay") as delay, mock.patch(
+            "evennia_scaling.handoff.scaling_log"
+        ), mock.patch.object(type(account), "msg"):
+            transfer_to_instance(
+                account, _PlayingSession(), character, "shard0"
+            )
+            before = delay.call_count
+            if error is None:
+                pending.callback((outcome == "moved", outcome))
+            else:
+                pending.errback(error)
+                pending.addErrback(lambda _failure: None)
+        return before, delay
+
+    def test_ho_04_defers_the_character_delete(self):
+        """HO-04: the delete waits for the answer, then for the reactor.
+
+        Before the answer nothing is known about whether the session left.
+        After it, `CmdIC` may still be using the character — it writes
+        `_last_puppet` and logs against it — and an answer that arrives
+        already fired runs its callbacks inline. `delay(0, ...)` is
         `reactor.callLater(0, ...)`, which cannot run until the stack
-        unwinds — structurally after, not merely likely to be.
+        unwinds.
         """
         account, character = self._playing()
-        _, _, delay, _ = self._transfer(account, character)
+        before, delay = self._answered(account, character, "moved")
+
+        self.assertEqual(before, 0)
+        delay.assert_called_once_with(0, character.delete)
+
+    def test_ho_21_a_moved_character_is_deleted(self):
+        """HO-21: the character is on the destination now."""
+        account, character = self._playing()
+        _, delay = self._answered(account, character, "moved")
+
+        delay.assert_called_once_with(0, character.delete)
+
+    def test_ho_22_a_move_that_never_arrived_keeps_the_character(self):
+        """HO-22: the session went nowhere, so the copy here is current.
+
+        Deleting it is what left a player whose move failed without the
+        character they tried to play.
+        """
+        for outcome in ("not_attached", "rejected", "stranded"):
+            with self.subTest(outcome=outcome):
+                account, character = self._playing()
+                _, delay = self._answered(account, character, outcome)
+
+                delay.assert_not_called()
+
+    def test_ho_23_the_other_answers_delete_the_character(self):
+        """HO-23: only the three that say the session never left keep it."""
+        for outcome in ("no_such_session", "already_there"):
+            with self.subTest(outcome=outcome):
+                account, character = self._playing()
+                _, delay = self._answered(account, character, outcome)
+
+                delay.assert_called_once_with(0, character.delete)
+
+    def test_ho_24_an_errback_deletes_the_character(self):
+        """HO-24: it cannot say whether the move happened.
+
+        A copy kept here after a move that did happen is live when the
+        character comes back, and `restore` hands back a live copy in
+        place of the newer archived one.
+        """
+        account, character = self._playing()
+        _, delay = self._answered(
+            account, character, error=RuntimeError("the amp link went away")
+        )
 
         delay.assert_called_once_with(0, character.delete)
 

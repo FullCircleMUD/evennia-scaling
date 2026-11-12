@@ -858,8 +858,8 @@ character sends them back to the router, and only the destination differs. A con
 between shards calls the same function, so the path a game uses is the path the library uses.
 
 Six steps: stamp where the character is going, archive what could have changed here, mint a ticket naming
-the account and the character, send it over the bus, delete the character locally, hand the session to
-`evennia-portal-multiplex`.
+the account and the character, send it over the bus, hand the session to `evennia-portal-multiplex`,
+and delete the character locally once the move answers — unless the answer says it never left.
 
 **Leaving stamps `current_shard` with the destination**, when the destination is a shard. Leaving is the
 moment the shard is known, and the stamp before the archive is what carries it. For this library's own
@@ -907,14 +907,20 @@ Every other case patches that predicate rather than faking a primary key. Faking
 breaks anything that then touches the database, and it would be asserting the predicate again in each
 place instead of the guard that calls it.
 
-**The character is deleted after the ticket is sent.** A failure at the handoff then leaves the
-character out of this database but present in the archive, with a live ticket already waiting — so a
-client reaching the destination still gets in.
+**The character is deleted once the move answers, unless the session never arrived.** `NOT_ATTACHED`,
+`REJECTED` and `STRANDED` keep it: the session went nowhere, so the copy here is still the current one,
+and a player whose move failed still has the character they tried to play. Every other answer deletes
+it.
+
+**An errback deletes it too.** It cannot say whether the move happened. A copy kept here after a move
+that did happen is live when the character comes back, and `restore` hands back a live copy in place
+of the newer archived one — everything played on the other instance is lost.
 
 **The account is not deleted here.** That waits for the session to actually close: deleting it out from
 under a live session is not something to do hopefully.
 
-**The delete is deferred by a reactor tick, and has to be.** `CmdIC` writes
+**The delete is deferred by a reactor tick after the answer, and has to be.** An answer can arrive
+already fired, and a fired Deferred runs its callbacks inline. `CmdIC` writes
 `account.db._last_puppet = character` and logs against the character *after* `puppet_object` returns.
 Deleting inline means Evennia then serialises a dead object and raises — found live in the old library,
 not reasoned about, and its own `except RuntimeError` handler reads the character's name, so raising out
@@ -962,7 +968,11 @@ The Deferred is still returned, so a caller can chain onto it. Nothing has to.
 | HO-17 | A superuser that is not `#1` transfers like any other account | test_ho_17_another_superuser_transfers |
 | HO-02 | The ticket names both archive ids and the destination | test_ho_02_mints_a_ticket_naming_both_and_the_destination |
 | HO-03 | The ticket is sent to the destination over the bus | test_ho_03_sends_the_ticket_over_the_bus |
-| HO-04 | The character's deletion is deferred to the reactor, not done inline | test_ho_04_defers_the_character_delete |
+| HO-04 | The character's deletion waits for the move's answer, then is deferred to the reactor rather than done inline | test_ho_04_defers_the_character_delete |
+| HO-21 | A move that comes back `MOVED` deletes the character | test_ho_21_a_moved_character_is_deleted |
+| HO-22 | A move that comes back `NOT_ATTACHED`, `REJECTED` or `STRANDED` keeps the character | test_ho_22_a_move_that_never_arrived_keeps_the_character |
+| HO-23 | A move that comes back `NO_SUCH_SESSION` or `ALREADY_THERE` deletes the character | test_ho_23_the_other_answers_delete_the_character |
+| HO-24 | An errback deletes the character — it cannot say whether the move happened | test_ho_24_an_errback_deletes_the_character |
 | HO-05 | The session is handed off to the destination, carrying the ticket | test_ho_05_hands_the_session_off_carrying_the_ticket |
 | HO-06 | The account is not deleted — that waits for the session to close | test_ho_06_does_not_delete_the_account |
 | HO-07 | The outcome of the move comes back to the caller | test_ho_07_returns_the_outcome_of_the_move |

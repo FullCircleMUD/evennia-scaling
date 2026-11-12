@@ -591,3 +591,8 @@ OUTCOMES = {
     NO_SUCH_SESSION: ("WARNING", None),
     ALREADY_THERE: ("WARNING", None),
 }
+
+#: The outcomes that keep the character where it was. The session never
+#: arrived anywhere, so the copy here is still the current one. Every other
+#: answer deletes it, an errback included. See docs/test-plan.md § HO.
+KEEPS_THE_CHARACTER = frozenset({NOT_ATTACHED, REJECTED, STRANDED})

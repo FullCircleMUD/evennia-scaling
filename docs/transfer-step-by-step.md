@@ -26,12 +26,12 @@ No gaps: this path is complete.
 - **[scaling]** a ticket is minted naming both archive ids and the destination; nothing is stored here
 - **[bus]** `SessionAuthorized` carries the ticket to the destination, which stores it with an expiry
   stamped from its own clock
-- **[scaling]** the local character is deleted, queued for the next reactor turn so Evennia has
-  finished with the object first
 - **[multiplex]** the session is handed to the destination Server behind the one Portal, carrying the
   token in its payload
 - **[scaling]** the outcome comes back, and anything but a move is logged; the player is told where a
   message can still reach them
+- **[scaling]** the local character is deleted, queued for the next reactor turn so Evennia has
+  finished with the object first — unless the outcome says the session never arrived
 
 **Puppeting is where the redirect goes, not the command.** `CmdIC` resolves which character is meant
 and then calls `puppet_object`, so overriding the method keeps Evennia's resolution and inherits
@@ -40,10 +40,11 @@ whatever a consumer's own `ic` does.
 **The destination is half the character's location pair**, so the pair has to be complete before there
 is anywhere to send them — which is why it is completed on the way out rather than on arrival.
 
-**Deleting after the ticket is sent is deliberate.** A failure at the handoff leaves the character out
-of this database but present in the archive with a live ticket waiting, so a client that reaches the
-destination still gets in. The account is not deleted at all: that waits for the session to close,
-because deleting an account out from under a live session disconnects it.
+**The character is deleted once the move answers.** `NOT_ATTACHED`, `REJECTED` and `STRANDED` keep
+it, because the session never arrived and the copy here is still the current one. Every other answer
+deletes it, an errback included — it cannot say whether the move happened. The account is not deleted
+at all: that waits for the session to close, because deleting an account out from under a live session
+disconnects it.
 
 ## Going out of character, shard to router
 
@@ -63,8 +64,8 @@ No gaps: this path is complete.
 - **[scaling]** `current_shard` is left as it is — the router is not a shard, and the character waits
   on the one it names
 - **[archive]** the character is archived, because leaving a shard archives the character
-- **[scaling]** a ticket is minted, and from here the steps are the departure's: bus, delete, handover,
-  outcome
+- **[scaling]** a ticket is minted, and from here the steps are the departure's: bus, handover, outcome,
+  delete
 
 **Releasing and leaving are separate.** `unpuppet_object` archives and nothing else, because it is
 reached from every dropped connection and from shutdown as well as from `ooc`. A five-second dropout

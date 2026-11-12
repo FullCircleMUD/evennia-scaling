@@ -8,8 +8,9 @@ See docs/test-plan.md § HO.
 # frame finishes before the session is handed away.
 from evennia.utils.utils import delay
 from evennia_portal_multiplex.move import send_session
+from twisted.python.failure import Failure
 
-from .config import LIMBO_PK, OUTCOMES, SCALING_TICKET_KEY
+from .config import KEEPS_THE_CHARACTER, LIMBO_PK, OUTCOMES, SCALING_TICKET_KEY
 from .log import scaling_log
 from .messages import SessionAuthorized
 from .tickets import create_ticket
@@ -503,8 +504,9 @@ def transfer_to_instance(account, session, character, to_instance):
     2. Mint a ticket naming both, addressed to ``to_instance``.
     3. Send it over the bus, so the destination learns of the transfer
        independently of the session that is about to arrive.
-    4. Delete the character locally.
-    5. Hand the session over, carrying the ticket.
+    4. Hand the session over, carrying the ticket.
+    5. Delete the character locally once the move answers, unless the
+       answer says the session never arrived — see `_delete_unless_kept`.
 
     **Archive what could have changed where you are leaving.** An account
     can only change on the router and a character can only change on a
@@ -515,11 +517,6 @@ def transfer_to_instance(account, session, character, to_instance):
     Archiving the other one would be worse than wasted: a shard's account
     is a working copy, and writing it back over the authoritative one could
     only ever carry a change that should not have been possible.
-
-    **Deleting after the ticket is sent is deliberate.** A failure at the
-    handoff leaves the character out of this database but present in the
-    archive with a live ticket waiting, so a client reaching the
-    destination still gets in.
 
     **The account is not deleted.** That waits for the session to actually
     close — deleting it out from under a live session disconnects it, which
@@ -571,20 +568,39 @@ def transfer_to_instance(account, session, character, to_instance):
     )
     SessionAuthorized.send(to_instance, payload=ticket)
 
-    # `CmdIC` writes `_last_puppet` and logs against the character *after*
-    # `puppet_object` returns, so deleting inline makes Evennia serialise a
-    # dead object. `delay(0, ...)` is `reactor.callLater(0, ...)`, which
-    # cannot run until this call stack unwinds — so the delete is
-    # structurally after Evennia is done, not merely likely to be.
-    delay(0, character.delete)
-
     # A dict, not a string: multiplex serialises the payload itself, and
     # encoding it here too lands a JSON string of a JSON string at the far
     # end — where reading it back yields a string rather than a mapping.
-    return report_outcome(
+    moving = report_outcome(
         send_session(
             session, to_instance, {SCALING_TICKET_KEY: ticket["token"]}
         ),
         account,
         to_instance,
     )
+    moving.addBoth(_delete_unless_kept, character)
+    return moving
+
+
+def _delete_unless_kept(result, character):
+    """Delete the character that left, once the move has answered.
+
+    `KEEPS_THE_CHARACTER` are the answers that say the session never
+    arrived, so the copy here is still the current one. Anything else
+    deletes it. An errback does too: it cannot say whether the move
+    happened, and a copy kept after a move that did happen is live when the
+    character comes back — `restore` hands that back in place of the newer
+    archived one.
+
+    `CmdIC` writes `_last_puppet` and logs against the character *after*
+    `puppet_object` returns, and an answer that arrives already fired runs
+    this inline. `delay(0, ...)` is `reactor.callLater(0, ...)`, which
+    cannot run until the call stack unwinds — so the delete is structurally
+    after Evennia is done, not merely likely to be.
+
+    Hands ``result`` on unchanged, a failure included, so a caller chaining
+    onto the move still sees what it came back as.
+    """
+    if isinstance(result, Failure) or result[1] not in KEEPS_THE_CHARACTER:
+        delay(0, character.delete)
+    return result
